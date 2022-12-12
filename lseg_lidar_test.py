@@ -71,48 +71,37 @@ def main():
 
     cosine_similarity = torch.nn.CosineSimilarity(dim=1)
 
-    # Text feats    
-    clip_text_encoder = net.clip_pretrained.encode_text
-    prompt = clip.tokenize('car')
-    prompt = prompt.cuda()
-    text_feat = clip_text_encoder(prompt)  # 1, 512
-    text_feat_norm = torch.nn.functional.normalize(text_feat, dim=1).detach().cpu()
-
     # Custom utils
-    kitti_util = KittiUtil('data/calib.txt')
+    kitti_util = KittiUtil('data/SMURFData/04_Camera/calib.txt')
 
     # image
-    img = kitti_util.load_img('data/220/000220_2.png')  # HxWxC
+    img = kitti_util.load_img('data/SMURFData/04_Camera/image_2/000000.png')  # HxWxC
 
 
-    pcd = kitti_util.load_pcd('data/220/000220.bin')
+    pcd = kitti_util.load_pcd('data/SMURFData/04_Lidar/velodyne/000000.bin')
     mask = np.ones(pcd.shape[0])
-    # pcd = pcd[pcd[:, 0] > 1] # only use lidar points that are falling on positive camera plane
 
+    # Only take lidar points that are on positive side of camera plane
     mask[np.where(pcd[:,0]<1)[0]] = 0
 
-    # pcd = pcd[pcd[:, 0] > 20]
-    # pcd = pcd[pcd[:, 0] < 40]
-    # pcd = pcd[pcd[:, 1] > -10]
-    # pcd = pcd[pcd[:, 1] < 10]
-
-    # visualize_multiple_pcd([pcd[:, :3]])
+    # x = Pi * T * X  | Lidar to camera projection
     pts_cam = kitti_util.velo_to_cam(pcd, 2)
     pts_cam = np.array(pts_cam, dtype=np.int32)  # 0th column is img width
 
 
     #  Filter pts_cam to get only the point in image limits
-
     mask[np.where(pts_cam[:,0] >=img.shape[1])[0]] = 0
     mask[np.where(pts_cam[:,0] <0)[0]] = 0
     mask[np.where(pts_cam[:,1] >=img.shape[0])[0]] = 0
     mask[np.where(pts_cam[:,1] <0)[0]] = 0
 
-    # pts_cam = pts_cam[pts_cam[:,0] <img.shape[1]]
-    # pts_cam = pts_cam[pts_cam[:,0] >0]
-    # pts_cam = pts_cam[pts_cam[:,1] <img.shape[0]]
-    # pts_cam = pts_cam[pts_cam[:,1] >0]
+    # idx is where mask is 1
+    idx = np.where([mask>0])[1]  # Somehow this returns a tuple of len 2
 
+    # Project lidar points on camera plane
+    img[pts_cam[idx, 1], pts_cam[idx, 0], :] = (255, 0, 0)
+    plt.imshow(img)
+    plt.show()
 
     # Getting image features
     img_feat = get_img_feat(img, net)
@@ -123,24 +112,24 @@ def main():
     img_feat_np = img_feat.detach().cpu().numpy()[0]
     img_feat_np = np.transpose(img_feat_np, (1,2,0))
     img_feat_np = cv2.resize(img_feat_np, (img.shape[1], img.shape[0]))
-
-    # idx is where mask is 1
-    idx = np.where([mask>0])[1]  # Somehow this returns a tuple of len 2
-
-    
     pcd_feat[idx] =  img_feat_np[pts_cam[idx, 1], pts_cam[idx, 0], :]
-    # pcd_feat = img_feat_np[pts_cam[:, 1], pts_cam[:, 0], :]
     pcd_feat = torch.tensor(pcd_feat)
 
-    # Distance in PCD Space
-    similarity = cosine_similarity(pcd_feat, text_feat_norm).cpu().numpy()
-    similarity = similarity * mask
-    
-    img[pts_cam[idx, 1], pts_cam[idx, 0], :] = (255, 0, 0)
-    plt.imshow(img)
-    plt.show()
+    while True:
+        # Text feats    
+        prompt = input('Enter Text Prompt: ')
+        if prompt=='exit':
+            break
+        clip_text_encoder = net.clip_pretrained.encode_text
+        prompt = clip.tokenize(prompt)
+        prompt = prompt.cuda()
+        text_feat = clip_text_encoder(prompt)  # 1, 512
+        text_feat_norm = torch.nn.functional.normalize(text_feat, dim=1).detach().cpu()
+        # Distance in PCD Space
+        similarity = cosine_similarity(pcd_feat, text_feat_norm).cpu().numpy()
+        similarity = similarity * mask
 
-    visualize_multiple_pcd([pcd[:,:3], pcd[similarity>0.85][:,:3]])
+        visualize_multiple_pcd([pcd[idx,:3], pcd[similarity>0.85][:,:3]])
     breakpoint()
 
 if __name__=='__main__':
