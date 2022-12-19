@@ -10,6 +10,13 @@ from dataclasses import dataclass
 import torch
 import cv2
 import clip
+import rospy
+from rosutil import RosCom
+import time
+
+
+rospy.init_node('lidar_lseg')
+roscom = RosCom()
 
 torch.cuda.empty_cache()
 
@@ -74,46 +81,64 @@ def main():
     # Custom utils
     kitti_util = KittiUtil('data/SMURFData/04_Camera/calib.txt')
 
+
+
     # image
-    img = kitti_util.load_img('data/SMURFData/04_Camera/image_2/000000.png')  # HxWxC
+    pcd_map = []
+    pcd_feat_map = []
+    for frame in range(21):
+        img = kitti_util.load_img('data/SMURFData/04_Camera/image_2/' + str(frame).zfill(6) + '.png')  # HxWxC
 
 
-    pcd = kitti_util.load_pcd('data/SMURFData/04_Lidar/velodyne/000000.bin')
-    mask = np.ones(pcd.shape[0])
+        pcd = kitti_util.load_pcd('data/SMURFData/04_Lidar/velodyne/' + str(frame).zfill(6) + '.bin')
 
-    # Only take lidar points that are on positive side of camera plane
-    mask[np.where(pcd[:,0]<1)[0]] = 0
+        # Publish to loam
+        roscom.publish_points(pcd[:, :3])
 
-    # x = Pi * T * X  | Lidar to camera projection
-    pts_cam = kitti_util.velo_to_cam(pcd, 2)
-    pts_cam = np.array(pts_cam, dtype=np.int32)  # 0th column is img width
+        mask = np.ones(pcd.shape[0])
+
+        # Only take lidar points that are on positive side of camera plane
+        mask[np.where(pcd[:,0]<1)[0]] = 0
+
+        # x = Pi * T * X  | Lidar to camera projection
+        pts_cam = kitti_util.velo_to_cam(pcd, 2)
+        pts_cam = np.array(pts_cam, dtype=np.int32)  # 0th column is img width
 
 
-    #  Filter pts_cam to get only the point in image limits
-    mask[np.where(pts_cam[:,0] >=img.shape[1])[0]] = 0
-    mask[np.where(pts_cam[:,0] <0)[0]] = 0
-    mask[np.where(pts_cam[:,1] >=img.shape[0])[0]] = 0
-    mask[np.where(pts_cam[:,1] <0)[0]] = 0
+        #  Filter pts_cam to get only the point in image limits
+        # There should be a one liner to do this.
+        mask[np.where(pts_cam[:,0] >=img.shape[1])[0]] = 0
+        mask[np.where(pts_cam[:,0] <0)[0]] = 0
+        mask[np.where(pts_cam[:,1] >=img.shape[0])[0]] = 0
+        mask[np.where(pts_cam[:,1] <0)[0]] = 0
 
-    # idx is where mask is 1
-    idx = np.where([mask>0])[1]  # Somehow this returns a tuple of len 2
+        # mask_idx are indexes we are considering, where mask is 1
+        mask_idx = np.where([mask>0])[1]  # Somehow this returns a tuple of len 2
 
-    # Project lidar points on camera plane
-    img[pts_cam[idx, 1], pts_cam[idx, 0], :] = (255, 0, 0)
-    plt.imshow(img)
-    plt.show()
+        # Project lidar points on camera plane
+        img[pts_cam[mask_idx, 1], pts_cam[mask_idx, 0], :] = (255, 0, 0)
+        # plt.imshow(img)
+        # plt.show()
 
-    # Getting image features
-    img_feat = get_img_feat(img, net)
+        # Getting image features
+        img_feat = get_img_feat(img, net)
+        
+
+        # Features in PCD Space
+        pcd_feat = np.zeros((pcd.shape[0], 512), dtype=np.float32)
+        img_feat_np = img_feat.detach().cpu().numpy()[0]
+        img_feat_np = np.transpose(img_feat_np, (1,2,0))
+        img_feat_np = cv2.resize(img_feat_np, (img.shape[1], img.shape[0]))
+        pcd_feat[mask_idx] =  img_feat_np[pts_cam[mask_idx, 1], pts_cam[mask_idx, 0], :]
+        pcd_feat = torch.tensor(pcd_feat)
+
+        # Transfrom wrt odom
+        if frame%5==0:
+            pcd_map.append((roscom.odom @ pcd[mask_idx].T).T)
+            pcd_feat_map.append(pcd_feat[mask_idx])
     
-
-    # Features in PCD Space
-    pcd_feat = np.zeros((pcd.shape[0], 512), dtype=np.float32)
-    img_feat_np = img_feat.detach().cpu().numpy()[0]
-    img_feat_np = np.transpose(img_feat_np, (1,2,0))
-    img_feat_np = cv2.resize(img_feat_np, (img.shape[1], img.shape[0]))
-    pcd_feat[idx] =  img_feat_np[pts_cam[idx, 1], pts_cam[idx, 0], :]
-    pcd_feat = torch.tensor(pcd_feat)
+    pcd_feat_map = torch.vstack(tuple(pcd_feat_map)) 
+    pcd_map = np.vstack(pcd_map)
 
     while True:
         # Text feats    
@@ -126,10 +151,10 @@ def main():
         text_feat = clip_text_encoder(prompt)  # 1, 512
         text_feat_norm = torch.nn.functional.normalize(text_feat, dim=1).detach().cpu()
         # Distance in PCD Space
-        similarity = cosine_similarity(pcd_feat, text_feat_norm).cpu().numpy()
-        similarity = similarity * mask
+        similarity = cosine_similarity(pcd_feat_map, text_feat_norm).cpu().numpy()
+        # similarity = similarity * mask
 
-        visualize_multiple_pcd([pcd[idx,:3], pcd[similarity>0.85][:,:3]])
+        visualize_multiple_pcd([pcd_map[:,:3], pcd_map[similarity>0.85][:,:3]])
     breakpoint()
 
 if __name__=='__main__':
