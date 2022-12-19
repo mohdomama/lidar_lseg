@@ -11,10 +11,14 @@ def visualize_pcd(pcd):
     o3d.visualization.draw_geometries([pcd_o3d])
 
 
-def create_o3d_pcd(pcd):
+def create_o3d_pcd(pcd, colors = None):
     assert pcd.shape[1] == 3, 'Invalid point cloud shape!'
     pcd_o3d = o3d.geometry.PointCloud()
     pcd_o3d.points = o3d.utility.Vector3dVector(pcd)
+    if colors is not None:
+        colors = o3d.utility.Vector3dVector(colors/255.0)
+        pcd_o3d.colors = colors
+
     return pcd_o3d
 
 def visualize_multiple_pcd(pcd_list, color_list = None, bg = (0,0,0)):
