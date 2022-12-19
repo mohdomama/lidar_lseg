@@ -78,19 +78,22 @@ def main():
 
     cosine_similarity = torch.nn.CosineSimilarity(dim=1)
 
+    sequence = '00'
+    kitti_path = '../../KITTI/dataset/sequences/' + sequence + '/'
     # Custom utils
-    kitti_util = KittiUtil('data/SMURFData/04_Camera/calib.txt')
+    kitti_util = KittiUtil(kitti_path+'calib.txt')
 
 
 
     # image
     pcd_map = []
     pcd_feat_map = []
+    pcd_color_map = []
     for frame in range(21):
-        img = kitti_util.load_img('data/SMURFData/04_Camera/image_2/' + str(frame).zfill(6) + '.png')  # HxWxC
+        img = kitti_util.load_img(kitti_path + 'image_2/' + str(frame).zfill(6) + '.png')  # HxWxC
 
 
-        pcd = kitti_util.load_pcd('data/SMURFData/04_Lidar/velodyne/' + str(frame).zfill(6) + '.bin')
+        pcd = kitti_util.load_pcd(kitti_path + 'velodyne/' + str(frame).zfill(6) + '.bin')
 
         # Publish to loam
         roscom.publish_points(pcd[:, :3])
@@ -116,7 +119,7 @@ def main():
         mask_idx = np.where([mask>0])[1]  # Somehow this returns a tuple of len 2
 
         # Project lidar points on camera plane
-        img[pts_cam[mask_idx, 1], pts_cam[mask_idx, 0], :] = (255, 0, 0)
+        # img[pts_cam[mask_idx, 1], pts_cam[mask_idx, 0], :] = (255, 0, 0)
         # plt.imshow(img)
         # plt.show()
 
@@ -136,8 +139,10 @@ def main():
         if frame%5==0:
             pcd_map.append((roscom.odom @ pcd[mask_idx].T).T)
             pcd_feat_map.append(pcd_feat[mask_idx])
-    
+            pcd_color_map.append(img[pts_cam[mask_idx, 1], pts_cam[mask_idx, 0], :])
+            
     pcd_feat_map = torch.vstack(tuple(pcd_feat_map)) 
+    pcd_color_map = np.vstack(tuple(pcd_color_map)) 
     pcd_map = np.vstack(pcd_map)
 
     while True:
@@ -154,8 +159,12 @@ def main():
         similarity = cosine_similarity(pcd_feat_map, text_feat_norm).cpu().numpy()
         # similarity = similarity * mask
 
-        visualize_multiple_pcd([pcd_map[:,:3], pcd_map[similarity>0.85][:,:3]])
+        visualize_multiple_pcd([pcd_map[:,:3], pcd_map[similarity>0.85][:,:3]], [pcd_color_map, None])
+
     breakpoint()
+    np.save('data/'+ sequence + '_pcd_feat_map.npy', pcd_feat_map)
+    np.save('data/'+ sequence + '_pcd_color_map.npy', pcd_color_map)
+    np.save('data/'+ sequence + '_pcd_map.npy', pcd_map)
 
 if __name__=='__main__':
     main()
