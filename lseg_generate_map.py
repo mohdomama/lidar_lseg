@@ -30,6 +30,7 @@ class ProgramArgs:
     arch_option: int = 0
     block_depth: int = 0
     activation: str = "lrelu"
+    sequence: str = "00"
     crop_size: int = 480
     # query_image: Union[str, Path] = (
     #     Path(__file__).parent.parent / "images" / "teddybear.jpg"
@@ -78,7 +79,7 @@ def main():
 
     cosine_similarity = torch.nn.CosineSimilarity(dim=1)
 
-    sequence = '00'
+    sequence = args.sequence
     kitti_path = '../../KITTI/dataset/sequences/' + sequence + '/'
     # Custom utils
     kitti_util = KittiUtil(kitti_path+'calib.txt')
@@ -89,7 +90,7 @@ def main():
     pcd_map = []
     pcd_feat_map = []
     pcd_color_map = []
-    for frame in range(21):
+    for frame in range(350):
         img = kitti_util.load_img(kitti_path + 'image_2/' + str(frame).zfill(6) + '.png')  # HxWxC
 
 

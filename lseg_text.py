@@ -27,6 +27,7 @@ class ProgramArgs:
     arch_option: int = 0
     block_depth: int = 0
     activation: str = "lrelu"
+    sequence: str = "00"
     crop_size: int = 480
     # query_image: Union[str, Path] = (
     #     Path(__file__).parent.parent / "images" / "teddybear.jpg"
@@ -77,7 +78,7 @@ def main():
 
     cosine_similarity = torch.nn.CosineSimilarity(dim=1)
 
-    sequence = '00'
+    sequence = args.sequence
     pcd_feat_map = torch.tensor(np.load('data/'+sequence+'_pcd_feat_map.npy'))
     pcd_color_map = np.load('data/'+sequence+'_pcd_color_map.npy')
     pcd_map = np.load('data/'+sequence+'_pcd_map.npy')
@@ -97,7 +98,7 @@ def main():
         similarity = cosine_similarity(pcd_feat_map, text_feat_norm).cpu().numpy()
         # similarity = similarity * mask
 
-        visualize_multiple_pcd([pcd_map[:,:3], pcd_map[similarity>0.75][:,:3]], [pcd_color_map, None])
+        visualize_multiple_pcd([pcd_map[:,:3], pcd_map[similarity>0.7][:,:3]], [pcd_color_map, None])
 
 
 if __name__=='__main__':
