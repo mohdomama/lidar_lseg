@@ -79,13 +79,18 @@ def main():
     cosine_similarity = torch.nn.CosineSimilarity(dim=1)
 
     sequence = args.sequence
-    pcd_feat_map = torch.tensor(np.load('data/'+sequence+'_pcd_feat_map.npy'))
-    pcd_color_map = np.load('data/'+sequence+'_pcd_color_map.npy')
-    pcd_map = np.load('data/'+sequence+'_pcd_map.npy')
+    # pcd_feat_map = torch.tensor(np.load('data/'+sequence+'_pcd_feat_map.npy'))
+    # pcd_color_map = np.load('data/'+sequence+'_pcd_color_map.npy')
+    # pcd_map = np.load('data/'+sequence+'_pcd_map.npy')
     
+    map_path = 'data/lego_loam_map1/'
+    pcd_feat_map = torch.tensor(np.load(map_path + 'pcd_feat_map.npy'))
+    pcd_color_map = np.load(map_path + 'pcd_color_map.npy')
+    pcd_map = np.load(map_path + 'pcd_map.npy')
     
+    thresh = 0.85   
     while True:
-        # Text feats    
+        # Text feats 
         prompt = input('Enter Text Prompt: ')
         if prompt=='exit':
             break
@@ -98,7 +103,8 @@ def main():
         similarity = cosine_similarity(pcd_feat_map, text_feat_norm).cpu().numpy()
         # similarity = similarity * mask
 
-        visualize_multiple_pcd([pcd_map[:,:3], pcd_map[similarity>0.7][:,:3]], [pcd_color_map, None])
+        visualize_multiple_pcd([pcd_map[:,:3], pcd_map[similarity>thresh][:,:3]], [None, None])
+        breakpoint()
 
 
 if __name__=='__main__':

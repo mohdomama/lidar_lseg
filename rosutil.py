@@ -10,14 +10,9 @@ from rosgraph_msgs.msg import Clock
 from nav_msgs.msg import Path, OccupancyGrid
 from geometry_msgs.msg import PoseStamped
 from transforms import get_rpy_from_odom_orientation, build_se3_transform
-
 import ros_numpy
-
-
 import numpy as np
-import ros_numpy
 import json
-from pyloam.src.feature_extract import FeatureExtract
 
 
 
@@ -31,7 +26,7 @@ class RosCom:
         rospy.Subscriber('/aft_mapped_to_init', Odometry,
                          self.odom_aftmap_callback)
 
-        rospy.Subscriber('/laser_cloud_map', PointCloud2,
+        rospy.Subscriber('/velodyne_points', PointCloud2,
                          self.map_callback)
 
         self.points_publisher = rospy.Publisher(
@@ -72,7 +67,7 @@ class RosCom:
     def map_callback(self, msg):
         pc = ros_numpy.numpify(msg)
         print(type(pc))
-        # print(pc.shape)
+        print(pc.shape)
 
     def clear(self):
         self.sequences = []
