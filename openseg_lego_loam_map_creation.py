@@ -18,6 +18,8 @@ import torch
 import cv2
 import clip
 from tqdm import tqdm
+import os
+
 torch.cuda.empty_cache()
 
 
@@ -152,6 +154,7 @@ def create_map():
 
 
     map_path = './data/lego_loam_map/'
+    images_count = len(os.listdir(map_path+'lego_loam_images/'))
     P, Tr_vel_camo = get_projection_matrices()
 
     T_static = build_se3_transform([0,0,0,0,0,1.57]) 
@@ -159,7 +162,7 @@ def create_map():
     pcd_map = []
     pcd_feat_map = []
     pcd_color_map = []
-    for idx in tqdm(range(797)):
+    for idx in tqdm(range(images_count)):
         keyframe_id = str(idx).zfill(6)
 
         odom = read_lego_loam_data_file(map_path, keyframe_id)
