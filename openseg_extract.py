@@ -4,7 +4,7 @@ ICL directory (for later use with gradslam).
 """
 import os
 os.environ["CUDA_DEVICE_ORDER"]="PCI_BUS_ID"
-os.environ["CUDA_VISIBLE_DEVICES"]=""
+os.environ["CUDA_VISIBLE_DEVICES"]="0,1,2,3"
 
 import tensorflow.compat.v1 as tf
 import torch
@@ -23,6 +23,15 @@ import numpy as np
 import tensorflow as tf2
 
 from tqdm import tqdm, trange
+
+
+
+from tensorflow.compat.v1 import ConfigProto
+from tensorflow.compat.v1 import InteractiveSession
+config = ConfigProto()
+config.gpu_options.allow_growth = True
+session = InteractiveSession(config=config)
+
 
 
 def upsample_feat_vec(feat, target_shape):
@@ -124,7 +133,6 @@ if __name__ == "__main__":
 
         with tf.gfile.GFile(imgfile, "rb") as f:
             np_image_string = np.array([f.read()])
-
         output = openseg_model.signatures["serving_default"](
             inp_image_bytes=tf.convert_to_tensor(np_image_string[0]),
             inp_text_emb=text_embedding,
@@ -148,3 +156,4 @@ if __name__ == "__main__":
         image_embedding = torch.nn.functional.normalize(image_embedding, dim=1)
 
         torch.save(image_embedding, outfile)
+        del output, image_embedding
