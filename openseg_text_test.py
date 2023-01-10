@@ -107,12 +107,12 @@ def main(pub):
     # pcd_color_map = np.load('data/'+sequence+'_pcd_color_map.npy')
     # pcd_map = np.load('data/'+sequence+'_pcd_map.npy')
     
-    map_path = 'data/lego_loam_map_openseg/'
+    map_path = 'data/lego_loam_map2/'
     pcd_feat_map = torch.tensor(np.load(map_path + 'pcd_feat_map.npy'))
     pcd_color_map = np.load(map_path + 'pcd_color_map.npy')
     pcd_map = np.load(map_path + 'pcd_map.npy')
     
-    thresh = 0.15   
+    thresh = 0.15
     clip_model, preprocess = clip.load("ViT-L/14@336px")
     while True:
         # Text feats 
@@ -133,33 +133,80 @@ def main(pub):
 
         visualize_multiple_pcd([pcd_map[:,:3], pcd_map[similarity>thresh][:,:3]], [pcd_color_map, None])
 
-        clusters_centers = []
-        best_matches = pcd_map[similarity.argsort()[::-1]][:100]
-        for pt in best_matches:
-            if len(clusters_centers) == 0:
-                clusters_centers.append(pt)
-            else:
-                if np.linalg.norm(clusters_centers[0]-pt)>10:
-                    clusters_centers.append(pt)
-                    break
+
         
-        cluster0, cluster1 = [], []
-        best_matches = pcd_map[similarity.argsort()[::-1]][:500]
-        for pt in best_matches:
-            if np.linalg.norm(clusters_centers[0]-pt)<10:
-                cluster0.append(pt)
-                clusters_centers[0] = np.mean(cluster0, axis=0)
-            if np.linalg.norm(clusters_centers[1]-pt)<10:
-                cluster1.append(pt)
-                clusters_centers[1] = np.mean(cluster1, axis=0)
+        clusters = {}
+        for point in pcd_map[similarity>thresh][:,:3]:
+            clusters[tuple(point)] = [point]
+        
+        change = True
+        while change:
+            print(len(clusters.keys()))
+            new_clusters = {}
+            change = False
+            for point in clusters.keys():
+                assigned = False
+                for new_point in new_clusters.keys():
+                    if np.linalg.norm(np.array(point)-np.array(new_point)) < 20:
+                        change = True
+                        assigned = True
+                        new_clusters[new_point].extend(clusters[point])
+                        break
+                if not assigned:
+                    new_clusters[point] = clusters[point]
+                
+            
+            
+            clusters = new_clusters
+
+            # Change cluster center value
+            new_clusters = {}
+            for point in clusters.keys():
+                new_clusters[tuple(np.mean(clusters[point], axis=0 ))] = clusters[point]
+            
+
+            clusters = new_clusters
+
+        max_len = 0
+        selected_point = None
+        for point in clusters.keys(): 
+            if len(clusters[point]) > max_len:
+                selected_point = point
+                max_len = len(clusters[point])
+
+        waypoint = selected_point
 
 
-        if len(cluster0) > len(cluster1):
-            waypoint = clusters_centers[0]
-        else:
-            waypoint = clusters_centers[1]
+        # clusters_centers = []
+        # best_matches = pcd_map[similarity.argsort()[::-1]][:100]
+        # for pt in best_matches:
+        #     if len(clusters_centers) == 0:
+        #         clusters_centers.append(pt)
+        #     else:
+        #         if np.linalg.norm(clusters_centers[0]-pt)>10:
+        #             clusters_centers.append(pt)
+        #             break
+        
+        # cluster0, cluster1 = [], []
+        # best_matches = pcd_map[similarity.argsort()[::-1]][:500]
+        # for pt in best_matches:
+        #     if np.linalg.norm(clusters_centers[0]-pt)<10:
+        #         cluster0.append(pt)
+        #         clusters_centers[0] = np.mean(cluster0, axis=0)
+        #     if np.linalg.norm(clusters_centers[1]-pt)<10:
+        #         cluster1.append(pt)
+        #         clusters_centers[1] = np.mean(cluster1, axis=0)
 
-        print(waypoint)
+
+        # if len(cluster0) > len(cluster1):
+        #     waypoint = clusters_centers[0]
+        # else:
+        #     waypoint = clusters_centers[1]
+
+
+
+        ######## Publishing Waypoints ###########
+        # print(waypoint)
 
         wpt_msg = PoseStamped()
 			
