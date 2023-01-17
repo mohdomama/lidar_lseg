@@ -1,5 +1,5 @@
-from o3d_util import visualize_multiple_pcd, pick_points, create_o3d_pcd
-from util import KittiUtil
+from util.o3d_util import visualize_multiple_pcd, pick_points, create_o3d_pcd
+from util.kitti_util import KittiUtil
 from matplotlib import pyplot as plt
 import numpy as np
 from lseg import LSegNet
@@ -11,7 +11,7 @@ import torch
 import cv2
 import clip
 import rospy
-from rosutil import RosCom
+from util.rosutil import RosCom
 import time
 import fast_pytorch_kmeans as fpk
 import open3d as o3d
