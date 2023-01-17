@@ -112,7 +112,7 @@ def main(pub):
     pcd_color_map = np.load(map_path + 'pcd_color_map.npy')
     pcd_map = np.load(map_path + 'pcd_map.npy')
     
-    thresh = 0.15
+    thresh = 0.1
     clip_model, preprocess = clip.load("ViT-L/14@336px")
     while True:
         # Text feats 
@@ -131,7 +131,9 @@ def main(pub):
         similarity = cosine_similarity(pcd_feat_map, text_feat).cpu().numpy()
         # similarity = similarity * mask
 
-        visualize_multiple_pcd([pcd_map[:,:3], pcd_map[similarity>thresh][:,:3]], [pcd_color_map, None])
+        pcd_highlight_map = np.copy(pcd_color_map)
+        pcd_highlight_map[:, ] = np.array([255, 0, 0])
+        visualize_multiple_pcd([pcd_map[:,:3], pcd_map[similarity>thresh][:,:3]], [pcd_color_map, pcd_highlight_map[similarity>thresh]])
 
 
         
