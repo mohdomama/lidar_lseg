@@ -103,11 +103,13 @@ def main():
     maxkey = max(class_remap.keys())
     remap_lut = np.zeros((maxkey + 100), dtype=np.int32)
     remap_lut[list(class_remap.keys())] = list(class_remap.values())
-    one_shot_vectors = np.zeros((20,512))
-    one_shot_vectors_counts = np.zeros((20))
+    one_shot_vectors = torch.zeros((20,512), dtype=torch.float32).cuda()
+    one_shot_vectors_counts = torch.zeros(20, dtype=torch.float32).cuda()
 
     print('Generating One Shot Vectors for Classes')
-    for frame in tqdm(range(len(os.listdir(kitti_path+'velodyne/')))):
+    frame_count = len(os.listdir(kitti_path+'velodyne/'))
+    for frame in tqdm(range(frame_count)):
+        tic = time.time()
         img = kitti_util.load_img(
             kitti_path + 'image_2/' + str(frame).zfill(6) + '.png')  # HxWxC
 
@@ -120,7 +122,11 @@ def main():
         labels = labels & 0xFFFF       # get lower half for semantics
         labels = remap_lut[labels]       # remap to xentropy format
 
+        toc = time.time()
+        # print('Data Load Time: ', toc - tic)
 
+        
+        tic = time.time()
         mask = np.ones(pcd.shape[0], dtype=np.float32)
         preds_all = -1 * np.ones(pcd.shape[0], dtype=np.float32) 
 
@@ -141,37 +147,53 @@ def main():
         # mask_idx are indexes we are considering, where mask is 1
         # Somehow this returns a tuple of len 2
         mask_idx = np.where([mask > 0])[1]
-
+        toc = time.time()
+        # print('Projection and Masking Time: ', toc - tic)
         # Project lidar points on camera plane
         # img[pts_cam[mask_idx, 1], pts_cam[mask_idx, 0], :] = (255, 0, 0)
         # plt.imshow(img)
         # plt.show()
 
         # Getting image features
+        tic = time.time()
         img_feat = get_img_feat(img, net)
-
-        # Features in PCD Space
-        pcd_feat = np.zeros((pcd.shape[0], 512), dtype=np.float32)
-        img_feat_np = img_feat.detach().cpu().numpy()[0]
-        img_feat_np = np.transpose(img_feat_np, (1, 2, 0))
-        img_feat_np = cv2.resize(img_feat_np, (img.shape[1], img.shape[0]))
-        pcd_feat[mask_idx] = img_feat_np[pts_cam[mask_idx, 1],
-                                         pts_cam[mask_idx, 0], :]
-
-        pcd = pcd[mask_idx]
-        pcd_feat = pcd_feat[mask_idx]
-        labels = labels[mask_idx]
-
-        for feat_idx in range(pcd_feat.shape[0]):
-            label = labels[feat_idx]
-            one_shot_vectors_counts[label]+=1
-            count = one_shot_vectors_counts[label]
-            one_shot_vectors[label] = one_shot_vectors[label] + (pcd_feat[feat_idx] - one_shot_vectors[label]) / float(count)
-
+        toc = time.time()
+        # print('Inference Time: ', toc-tic)
         
+        # Features in PCD Space
+        tic = time.time()
+        img_feat = torch.nn.functional.interpolate(img_feat, [img.shape[0], img.shape[1]], mode="bilinear", align_corners=True)
+        img_feat = torch.permute(img_feat[0], (1,2,0))
+        # img_feat_np = cv2.resize(img_feat_np, (img.shape[1], img.shape[0]))
+        pcd_feat = img_feat[pts_cam[mask_idx, 1], pts_cam[mask_idx, 0], :]
+        pcd = pcd[mask_idx]
+        labels = labels[mask_idx]
+        toc = time.time(); # print('Feature PCD Space Time: ', toc-tic)
+        
+        tic = time.time()
+        labels = torch.tensor(labels)
+        for label in range(20):
+            idxs = torch.where(labels==label)[0]
+            count_curr = idxs.shape[0]
+            u_curr = torch.mean(pcd_feat[idxs], axis=0)
+            count = one_shot_vectors_counts[label]
+            if count_curr!=0:
+                one_shot_vectors[label] = (one_shot_vectors[label]* count + u_curr*count_curr) / (count+count_curr)
+            one_shot_vectors_counts[label] += count_curr
+            
+        #for feat_idx in range(pcd_feat.shape[0]):
+        if one_shot_vectors.isnan().any():
+            breakpoint()
+        #    label = labels[feat_idx]
+        #    one_shot_vectors_counts[label]+=1
+        #    count = one_shot_vectors_counts[label]
+        #    one_shot_vectors[label] = one_shot_vectors[label] + (pcd_feat[feat_idx] - one_shot_vectors[label]) / count
+        toc = time.time()
+        # print('Label Agg. Time: ', toc - tic)
 
-    one_shot_vectors = torch.tensor(one_shot_vectors)
-
+    # one_shot_vectors = torch.tensor(one_shot_vectors)
+    
+    breakpoint()
     # image
     pcd_map = []
     pcd_feat_map = []
@@ -221,25 +243,31 @@ def main():
         # Getting image features
         img_feat = get_img_feat(img, net)
 
-        # Features in PCD Space
-        pcd_feat = np.zeros((pcd.shape[0], 512), dtype=np.float32)
-        img_feat_np = img_feat.detach().cpu().numpy()[0]
-        img_feat_np = np.transpose(img_feat_np, (1, 2, 0))
-        img_feat_np = cv2.resize(img_feat_np, (img.shape[1], img.shape[0]))
-        pcd_feat[mask_idx] = img_feat_np[pts_cam[mask_idx, 1],
-                                         pts_cam[mask_idx, 0], :]
-        pcd_feat = torch.tensor(pcd_feat)
+        ## Features in PCD Space
+        #pcd_feat = np.zeros((pcd.shape[0], 512), dtype=np.float32)
+        #img_feat_np = img_feat.detach().cpu().numpy()[0]
+        #img_feat_np = np.transpose(img_feat_np, (1, 2, 0))
+        #img_feat_np = cv2.resize(img_feat_np, (img.shape[1], img.shape[0]))
+        #pcd_feat[mask_idx] = img_feat_np[pts_cam[mask_idx, 1],
+        #                                 pts_cam[mask_idx, 0], :]
+        #pcd_feat = torch.tensor(pcd_feat)
 
-        pcd = torch.tensor(pcd[mask_idx])
-        pcd_feat = torch.tensor(pcd_feat[mask_idx])
+        #pcd = torch.tensor(pcd[mask_idx])
+        #pcd_feat = torch.tensor(pcd_feat[mask_idx])
 
+        img_feat = torch.nn.functional.interpolate(img_feat, [img.shape[0], img.shape[1]], mode="bilinear", align_corners=True)
+        img_feat = torch.permute(img_feat[0], (1,2,0))
+        # img_feat_np = cv2.resize(img_feat_np, (img.shape[1], img.shape[0]))
+        pcd_feat = img_feat[pts_cam[mask_idx, 1], pts_cam[mask_idx, 0], :]
+        
         similarity = cosine_similarity(pcd_feat.unsqueeze(
-            0), one_shot_vectors.unsqueeze(1).cpu())
+            0), one_shot_vectors.unsqueeze(1))
         
         pred = similarity.argmax(axis=0)
-
-        preds_all[mask_idx] = pred
+        debug = True
         
+
+        preds_all[mask_idx] = pred.detach().cpu().numpy()
         np.save(out_path+'predictions/' + str(frame).zfill(6) + '.npy', preds_all)
         np.save(out_path+'masks/' + str(frame).zfill(6) + '.npy', mask)
         
