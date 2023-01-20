@@ -217,7 +217,7 @@ def main():
         # Default is bilinear
         # breakpoint()
         tic = time.time()
-        img_feat2 = tf2.raw_ops.ResizeBilinear(images=img_feat, size=[image_height, image_width], align_corners=True)
+        img_feat = tf2.raw_ops.ResizeBilinear(images=img_feat, size=[image_height, image_width], align_corners=True)
         toc = time.time()
         # print('Upscaling Time: ',toc-tic)
 
@@ -337,7 +337,7 @@ def main():
         # Default is bilinear
         # breakpoint()
         tic = time.time()
-        img_feat2 = tf2.raw_ops.ResizeBilinear(images=img_feat, size=[image_height, image_width], align_corners=True)
+        img_feat = tf2.raw_ops.ResizeBilinear(images=img_feat, size=[image_height, image_width], align_corners=True)
         toc = time.time()
         # print('Upscaling Time: ',toc-tic)
 

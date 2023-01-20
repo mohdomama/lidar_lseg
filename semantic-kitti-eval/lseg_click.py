@@ -6,7 +6,7 @@ from lseg import LSegNet
 from pathlib import Path
 from typing import Union
 import tyro
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import torch
 import cv2
 import clip
@@ -27,6 +27,9 @@ class ProgramArgs:
     one_shot_seqence: str = "00"
     semantic_kitti_api_config: str = 'packages/semantic-kitti-api/config/semantic-kitti.yaml'
     semantic_preds_dir: str = 'data/SemanticSeg/SemanticKITTI/lseg_text/'
+    crop: bool = field(default=False)
+    width_min: int = 293
+    width_max: int = 933
 
     # Needed for LSEG
     backbone: str = "clip_vitl16_384"
@@ -116,6 +119,9 @@ def main():
         pcd = kitti_util.load_pcd(
             kitti_path + 'velodyne/' + str(frame).zfill(6) + '.bin')
 
+        if args.crop:
+            img = img[:, args.width_min:args.width_max, :]
+
         label_file = kitti_path + 'labels/' + str(frame).zfill(6) + '.label'
         labels = np.fromfile(label_file, dtype=np.int32)
         labels = labels.reshape((-1))  # reshape to vector
@@ -139,10 +145,16 @@ def main():
 
         #  Filter pts_cam to get only the point in image limits
         # There should be a one liner to do this.
-        mask[np.where(pts_cam[:, 0] >= img.shape[1])[0]] = 0
-        mask[np.where(pts_cam[:, 0] < 0)[0]] = 0
-        mask[np.where(pts_cam[:, 1] >= img.shape[0])[0]] = 0
-        mask[np.where(pts_cam[:, 1] < 0)[0]] = 0
+        if args.crop:
+            mask[np.where(pts_cam[:, 0] >= args.width_max)[0]] = 0
+            mask[np.where(pts_cam[:, 0] < args.width_min)[0]] = 0
+            mask[np.where(pts_cam[:, 1] >= img.shape[0])[0]] = 0
+            mask[np.where(pts_cam[:, 1] < 0)[0]] = 0
+        else:
+            mask[np.where(pts_cam[:, 0] >= img.shape[1])[0]] = 0
+            mask[np.where(pts_cam[:, 0] < 0)[0]] = 0
+            mask[np.where(pts_cam[:, 1] >= img.shape[0])[0]] = 0
+            mask[np.where(pts_cam[:, 1] < 0)[0]] = 0
 
         # mask_idx are indexes we are considering, where mask is 1
         # Somehow this returns a tuple of len 2
@@ -165,7 +177,12 @@ def main():
         img_feat = torch.nn.functional.interpolate(img_feat, [img.shape[0], img.shape[1]], mode="bilinear", align_corners=True)
         img_feat = torch.permute(img_feat[0], (1,2,0))
         # img_feat_np = cv2.resize(img_feat_np, (img.shape[1], img.shape[0]))
-        pcd_feat = img_feat[pts_cam[mask_idx, 1], pts_cam[mask_idx, 0], :]
+        if args.crop:
+            pcd_feat = img_feat[pts_cam[mask_idx, 1], pts_cam[mask_idx, 0]-args.width_min, :]
+        else:
+            pcd_feat = img_feat[pts_cam[mask_idx, 1], pts_cam[mask_idx, 0], :]
+
+
         pcd = pcd[mask_idx]
         labels = labels[mask_idx]
         toc = time.time(); # print('Feature PCD Space Time: ', toc-tic)
@@ -180,9 +197,11 @@ def main():
             if count_curr!=0:
                 one_shot_vectors[label] = (one_shot_vectors[label]* count + u_curr*count_curr) / (count+count_curr)
             one_shot_vectors_counts[label] += count_curr
+        
             
         #for feat_idx in range(pcd_feat.shape[0]):
         if one_shot_vectors.isnan().any():
+            print('Got Nan!')
             breakpoint()
         #    label = labels[feat_idx]
         #    one_shot_vectors_counts[label]+=1
@@ -193,7 +212,6 @@ def main():
 
     # one_shot_vectors = torch.tensor(one_shot_vectors)
     
-    breakpoint()
     # image
     pcd_map = []
     pcd_feat_map = []
@@ -205,6 +223,8 @@ def main():
     kitti_util = KittiUtil(kitti_path+'calib.txt')
 
     out_path = args.semantic_preds_dir + 'sequences/' + args.sequence + '/'
+    os.makedirs(out_path+'predictions/', exist_ok=True)
+    os.makedirs(out_path+'masks/', exist_ok=True)
     print('Running Inference!')
     for frame in tqdm(range(len(os.listdir(kitti_path+'velodyne/')))):
         img = kitti_util.load_img(
@@ -212,6 +232,9 @@ def main():
 
         pcd = kitti_util.load_pcd(
             kitti_path + 'velodyne/' + str(frame).zfill(6) + '.bin')
+        
+        if args.crop:
+            img = img[:, args.width_min:args.width_max, :]
 
 
         mask = np.ones(pcd.shape[0], dtype=np.float32)
@@ -226,10 +249,16 @@ def main():
 
         #  Filter pts_cam to get only the point in image limits
         # There should be a one liner to do this.
-        mask[np.where(pts_cam[:, 0] >= img.shape[1])[0]] = 0
-        mask[np.where(pts_cam[:, 0] < 0)[0]] = 0
-        mask[np.where(pts_cam[:, 1] >= img.shape[0])[0]] = 0
-        mask[np.where(pts_cam[:, 1] < 0)[0]] = 0
+        if args.crop:
+            mask[np.where(pts_cam[:, 0] >= args.width_max)[0]] = 0
+            mask[np.where(pts_cam[:, 0] < args.width_min)[0]] = 0
+            mask[np.where(pts_cam[:, 1] >= img.shape[0])[0]] = 0
+            mask[np.where(pts_cam[:, 1] < 0)[0]] = 0
+        else:
+            mask[np.where(pts_cam[:, 0] >= img.shape[1])[0]] = 0
+            mask[np.where(pts_cam[:, 0] < 0)[0]] = 0
+            mask[np.where(pts_cam[:, 1] >= img.shape[0])[0]] = 0
+            mask[np.where(pts_cam[:, 1] < 0)[0]] = 0
 
         # mask_idx are indexes we are considering, where mask is 1
         # Somehow this returns a tuple of len 2
@@ -258,7 +287,10 @@ def main():
         img_feat = torch.nn.functional.interpolate(img_feat, [img.shape[0], img.shape[1]], mode="bilinear", align_corners=True)
         img_feat = torch.permute(img_feat[0], (1,2,0))
         # img_feat_np = cv2.resize(img_feat_np, (img.shape[1], img.shape[0]))
-        pcd_feat = img_feat[pts_cam[mask_idx, 1], pts_cam[mask_idx, 0], :]
+        if args.crop:
+            pcd_feat = img_feat[pts_cam[mask_idx, 1], pts_cam[mask_idx, 0]-args.width_min, :]
+        else:
+            pcd_feat = img_feat[pts_cam[mask_idx, 1], pts_cam[mask_idx, 0], :]
         
         similarity = cosine_similarity(pcd_feat.unsqueeze(
             0), one_shot_vectors.unsqueeze(1))
