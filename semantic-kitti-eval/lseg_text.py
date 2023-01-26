@@ -14,7 +14,7 @@ import yaml
 import time
 import os
 from tqdm import tqdm
-from sklearn.metrics import jaccard_score, confusion_matrix, accuracy_score
+from sklearn.metrics import jaccard_score, confusion_matrix, accuracy_score, classification_report
 
 
 torch.cuda.empty_cache()
@@ -80,12 +80,9 @@ Lseg_Prompts = [
     "person",           # 4        
     "road",             # 5        
     "sidewalk",         # 6            
-    "terrain",          # 7        
-    "building",         # 8           
-    "fence",            # 9       
-    "vegetation",       # 10           
-    "pole",             # 11        
-    "traffic-sign"      # 12            
+    "building",         # 7           
+    "vegetation",       # 8           
+    "pole",             # 9        
     ]
 
 LABEL_MAP_LSEG_DICT = {
@@ -101,14 +98,14 @@ LABEL_MAP_LSEG_DICT = {
   9: 5,       
   10: 5,       
   11: 6,       
-  12: 7,      
-  13: 8,      
-  14: 9,      
-  15: 10,      
-  16: 10,      
-  17: 7,      
-  18: 11,      
-  19: 12,      
+  12: 8,      
+  13: 7,      
+  14: 7,      
+  15: 8,      
+  16: 8,      
+  17: 8,      
+  18: 9,      
+  19: 9,      
 }
 
 LABEL_MAP_LSEG = np.zeros(20, dtype=np.int16)
@@ -139,7 +136,6 @@ def main():
 
     color_map = []
     for class_idx in sorted(kitti_config_data['learning_map_inv'].keys()):
-        print(class_idx)
         color_map.append(kitti_config_data['color_map'][kitti_config_data['learning_map_inv'][class_idx]])
     color_map = np.array(color_map)
 
@@ -169,6 +165,7 @@ def main():
     labels_seq = []
     preds_seq = []
     unqlabel_seq = []
+    
     for frame in tqdm(range(len(os.listdir(kitti_path+'velodyne/')))):
         img = kitti_util.load_img(
             kitti_path + 'image_2/' + str(frame).zfill(6) + '.png')  # HxWxC
@@ -282,25 +279,30 @@ def main():
     iou_all = jaccard_score(y_true=labels_seq, y_pred=preds_seq, average=None, labels=unqlabel_seq)
     
     accuracy = accuracy_score(y_true=labels_seq, y_pred=preds_seq, )
-    
+    accuracy = accuracy_score(y_true=labels_seq[labels_seq!=0], y_pred=preds_seq[labels_seq!=0], )
+    report = classification_report(y_true=labels_seq, y_pred=preds_seq, labels=unqlabel_seq)
+
+    print('\n')
+    for i in range(len(iou_all)):
+        print(Lseg_Prompts[unqlabel_seq[i]], '\t', iou_all[i])
+
+    print()
+    print('MIOU: ', miou)
+    print('WMIOU: ', wmiou)
+    print('Accuracy: ', accuracy)
+
+    print()
+    print(report)
+
+
     # cm = confusion_matrix(y_true=labels_seq, y_pred=preds_seq)
     cm_pred = confusion_matrix(y_true=labels_seq, y_pred=preds_seq, normalize='pred')
     cm_true = confusion_matrix(y_true=labels_seq, y_pred=preds_seq, normalize='true')
     cm = confusion_matrix(y_true=labels_seq, y_pred=preds_seq)
     plt.matshow(cm_pred)
-    plt.savefig(fname='data/cm_pred.png', dpi=500)
+    plt.savefig(fname='data/'+sequence+'cm_pred.png', dpi=500)
     plt.matshow(cm_true)
-    plt.savefig(fname='data/cm_true.png', dpi=500)
-
-    for i in range(len(iou_all)):
-        print(Lseg_Prompts[unqlabel_seq[i]], iou_all[i])
-    print('MIOU: ', miou)
-    print('WMIOU: ', wmiou)
-    print('Accuracy: ', accuracy)
-    print('CM:')
-    print(cm)
-    print(unqlabel_seq)
-    breakpoint()
+    plt.savefig(fname='data/'+sequence+'cm_true.png', dpi=500)
 
 if __name__ == '__main__':
     main()
