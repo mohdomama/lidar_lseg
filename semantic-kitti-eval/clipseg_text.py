@@ -11,9 +11,9 @@ import yaml
 import os
 from tqdm import tqdm
 from sklearn.metrics import jaccard_score, confusion_matrix, accuracy_score, classification_report
-from test_clipseg import upsample_feat_vec
 from clipseg import CLIPDensePredT
 from torchvision import transforms
+import time
 
 
 torch.cuda.empty_cache()
@@ -21,7 +21,7 @@ torch.cuda.empty_cache()
 
 @dataclass
 class ProgramArgs:
-    checkpoint_path: str = "data/clipseg/rd64-uni.pth"
+    checkpoint_path: str = "data/clipseg/rd64-uni-refined.pth"
     kitti_dataset: str = "data/SEMANTIC-KITTI-DATASET/"
     sequence: str = "08"
     semantic_kitti_api_config: str = 'packages/semantic-kitti-api/config/semantic-kitti.yaml'
@@ -116,7 +116,7 @@ def main():
     # ClipSeg
     args = tyro.cli(ProgramArgs)
     model = CLIPDensePredT(version="ViT-B/16", reduce_dim=64)
-    model.eval()
+    model.eval().cuda()
 
     model.load_state_dict(
         torch.load(str(args.checkpoint_path), map_location=torch.device("cpu")),
@@ -219,7 +219,7 @@ def main():
 
         # Getting image features
         # Clipseg code gives similarity scored directly. 
-        preds = model(transform(img).unsqueeze(0).repeat(len(Lseg_Prompts), 1, 1, 1), Lseg_Prompts)[0]
+        preds = model(transform(img).unsqueeze(0).cuda().repeat(len(Lseg_Prompts), 1, 1, 1), Lseg_Prompts)[0]
 
         # Features in PCD Space
         preds = torch.nn.functional.interpolate(preds, (img.shape[0], img.shape[1]), mode="bilinear", align_corners=True)
@@ -227,9 +227,9 @@ def main():
 
 
         if args.crop:
-            pcd_preds = preds[pts_cam[mask_idx, 1], pts_cam[mask_idx, 0]-args.width_min, :]
+            pcd_preds = preds[pts_cam[mask_idx, 1], pts_cam[mask_idx, 0]-args.width_min]
         else:
-            pcd_preds = preds[pts_cam[mask_idx, 1], pts_cam[mask_idx, 0], :]
+            pcd_preds = preds[pts_cam[mask_idx, 1], pts_cam[mask_idx, 0]]
 
         pcd = torch.tensor(pcd[mask_idx])
 
@@ -284,8 +284,8 @@ def main():
     print('WMIOU: ', wmiou)
     print('Accuracy: ', accuracy)
 
-    print()
-    print(report)
+    # print(report)
+    print(accuracy,',', wmiou, ',', miou)
 
 
     # cm = confusion_matrix(y_true=labels_seq, y_pred=preds_seq)
