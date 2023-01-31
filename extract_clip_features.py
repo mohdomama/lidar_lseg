@@ -146,8 +146,141 @@ def get_parser():
     return parser
 
 
-if __name__ == "__main__":
+def get_image_features_sg(imgfile, maskfile, model, preprocess):
+     # print("Reading image...")
+    img = cv2.imread(imgfile)
+    img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+    img = cv2.resize(img, (LOAD_IMG_WIDTH, LOAD_IMG_HEIGHT))
+    img = torch.from_numpy(img)
 
+    """
+    Extract and save global feat vec
+    """
+    global_feat = None
+    with torch.cuda.amp.autocast():
+        # print("Extracting global CLIP features...")
+        _img = preprocess(Image.open(imgfile)).unsqueeze(0)
+        imgfeat = model.encode_image(_img.cuda())
+        imgfeat /= imgfeat.norm(dim=-1, keepdim=True)
+        tqdm.write(f"Image feature dims: {imgfeat.shape} \n")
+        # global_feat_savefile = os.path.join(
+        #     global_feat_savedir,
+        #     f"feat_global_{OPENCLIP_MODEL}_{OPENCLIP_PRETRAINED_DATASET}_{LOAD_IMG_HEIGHT}_{LOAD_IMG_WIDTH}.pt",
+        # )
+        
+        global_feat = imgfeat.detach().cpu().half()
+        
+
+    global_feat = global_feat.half().cuda()
+    global_feat = torch.nn.functional.normalize(global_feat, dim=-1)  # --> (1, 1024)
+    feat_dim = global_feat.shape[-1]
+
+    cosine_similarity = torch.nn.CosineSimilarity(dim=-1)
+
+
+    """
+    Extract per-mask features
+    """
+    # Output feature vector (semiglobal, 2x, 4x)
+    outfeat_sg = torch.zeros(LOAD_IMG_HEIGHT, LOAD_IMG_WIDTH, feat_dim, dtype=torch.half)
+    # outfeat_1x = torch.zeros(LOAD_IMG_HEIGHT, LOAD_IMG_WIDTH, feat_dim, dtype=torch.half)
+    # outfeat_2x = torch.zeros(LOAD_IMG_HEIGHT, LOAD_IMG_WIDTH, feat_dim, dtype=torch.half)
+    # outfeat_4x = torch.zeros(LOAD_IMG_HEIGHT, LOAD_IMG_WIDTH, feat_dim, dtype=torch.half)
+    # # outfeat_zseg = torch.zeros(LOAD_IMG_HEIGHT, LOAD_IMG_WIDTH, feat_dim, dtype=torch.half)
+
+    # print(f"Loading instance masks {maskfile}...")
+    mask = torch.load(maskfile).unsqueeze(0)  # 1, num_masks, H, W
+    mask = torch.nn.functional.interpolate(mask, [LOAD_IMG_HEIGHT, LOAD_IMG_WIDTH], mode="nearest")
+    num_masks = mask.shape[-3]
+    pallete = get_new_pallete(num_masks)
+
+    rois = []
+    roi_similarities_with_global_vec = []
+    roi_sim_per_unit_area = []
+    feat_per_roi = []
+    roi_nonzero_inds = []
+
+    for _i in range(num_masks):
+
+        # viz = torch.zeros(IMG_HEIGHT, IMG_WIDTH, 3)
+        curmask = mask[0, _i]
+        bbox, nonzero_inds = get_bbox_around_mask(curmask)
+        x0, y0, x1, y1 = bbox
+        # viz[x0:x1, y0:y1, 0] = 1.0
+
+        bbox_area = (x1 - x0 + 1) * (y1 - y0 + 1)
+        img_area = LOAD_IMG_WIDTH * LOAD_IMG_HEIGHT
+        iou = bbox_area / img_area
+
+        if iou < 0.005:
+            continue
+
+        # per-mask features
+        img_roi = img[x0:x1, y0:y1]
+        img_roi = Image.fromarray(img_roi.detach().cpu().numpy())
+        img_roi = preprocess(img_roi).unsqueeze(0).cuda()
+        roifeat = model.encode_image(img_roi)
+        roifeat = torch.nn.functional.normalize(roifeat, dim=-1)
+        feat_per_roi.append(roifeat)
+        roi_nonzero_inds.append(nonzero_inds)
+
+        _sim = cosine_similarity(global_feat, roifeat)
+
+        rois.append(torch.tensor(list(bbox)))
+        roi_similarities_with_global_vec.append(_sim)
+        roi_sim_per_unit_area.append(_sim)# / iou)
+        # print(f"{_sim.item():.3f}, {iou:.3f}, {_sim.item() / iou:.3f}")
+
+
+    """
+    global_clip_plus_mask_weighted
+    # """
+    rois = torch.stack(rois)
+    scores = torch.cat(roi_sim_per_unit_area).to(rois.device)
+    # nms not implemented for Long tensors
+    # nms on CUDA is not stable sorted; but the CPU version is
+    retained = torchvision.ops.nms(rois.float().cpu(), scores.cpu(), iou_threshold=1.0)
+    feat_per_roi = torch.cat(feat_per_roi, dim=0)  # N, 1024
+    
+    # print(f"retained {len(retained)} masks of {rois.shape[0]} total")
+    retained_rois = rois[retained]
+    retained_scores = scores[retained]
+    retained_feat = feat_per_roi[retained]
+    retained_nonzero_inds = []
+    for _roiidx in range(retained.shape[0]):
+        retained_nonzero_inds.append(roi_nonzero_inds[retained[_roiidx].item()])
+    
+    viz = torch.zeros(LOAD_IMG_HEIGHT, LOAD_IMG_WIDTH, 3)
+
+    mask_sim_mat = torch.nn.functional.cosine_similarity(
+        retained_feat[:, :, None], retained_feat.t()[None, :, :]
+    )
+    mask_sim_mat.fill_diagonal_(0.)
+    mask_sim_mat = mask_sim_mat.mean(1)  # avg sim of each mask with each other mask
+    softmax_scores = retained_scores.cuda() - mask_sim_mat
+    softmax_scores = torch.nn.functional.softmax(softmax_scores, dim=0)
+    # retained_scores = retained_scores.cuda() * mask_sim_mat
+    # softmax_scores = torch.nn.functional.softmax(retained_scores, dim=0).cuda()
+    for _roiidx in range(retained.shape[0]):
+        _weighted_feat = softmax_scores[_roiidx] * global_feat + (1 - softmax_scores[_roiidx]) * retained_feat[_roiidx]
+        _weighted_feat = torch.nn.functional.normalize(_weighted_feat, dim=-1)
+        outfeat_sg[retained_nonzero_inds[_roiidx][:, 0], retained_nonzero_inds[_roiidx][:, 1]] += _weighted_feat[0].detach().cpu().half()
+        outfeat_sg[retained_nonzero_inds[_roiidx][:, 0], retained_nonzero_inds[_roiidx][:, 1]] = torch.nn.functional.normalize(
+            outfeat_sg[retained_nonzero_inds[_roiidx][:, 0], retained_nonzero_inds[_roiidx][:, 1]].float(), dim=-1
+        ).half()
+
+    outfeat_sg = outfeat_sg.unsqueeze(0).float()  # interpolate is not implemented for float yet in pytorch
+    outfeat_sg = outfeat_sg.permute(0, 3, 1, 2)  # 1, H, W, feat_dim -> 1, feat_dim, H, W
+    outfeat_sg = torch.nn.functional.interpolate(outfeat_sg, [TGT_IMG_HEIGHT, TGT_IMG_WIDTH], mode="nearest")
+    outfeat_sg = outfeat_sg.permute(0, 2, 3, 1)  # 1, feat_dim, H, W --> 1, H, W, feat_dim
+    outfeat_sg = torch.nn.functional.normalize(outfeat_sg, dim=-1)
+    outfeat_sg = outfeat_sg[0].half() # --> H, W, feat_dim
+
+    return outfeat_sg, global_feat
+
+
+
+def main():
     torch.autograd.set_grad_enabled(False)
 
     args = get_parser().parse_args()
@@ -190,178 +323,16 @@ if __name__ == "__main__":
         Load masks, sample boxes
         """
         
-        # print("Reading image...")
-        img = cv2.imread(imgfile)
-        img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-        img = cv2.resize(img, (LOAD_IMG_WIDTH, LOAD_IMG_HEIGHT))
-        img = torch.from_numpy(img)
-
-        """
-        Extract and save global feat vec
-        """
-        global_feat = None
-        with torch.cuda.amp.autocast():
-            # print("Extracting global CLIP features...")
-            _img = preprocess(Image.open(imgfile)).unsqueeze(0)
-            imgfeat = model.encode_image(_img.cuda())
-            imgfeat /= imgfeat.norm(dim=-1, keepdim=True)
-            tqdm.write(f"Image feature dims: {imgfeat.shape} \n")
-            # global_feat_savefile = os.path.join(
-            #     global_feat_savedir,
-            #     f"feat_global_{OPENCLIP_MODEL}_{OPENCLIP_PRETRAINED_DATASET}_{LOAD_IMG_HEIGHT}_{LOAD_IMG_WIDTH}.pt",
-            # )
-            global_feat_savefile = os.path.join(global_feat_savedir, stem + ".pt")
-            tqdm.write(f"Saving to {global_feat_savefile} \n")
-            global_feat = imgfeat.detach().cpu().half()
-            torch.save(global_feat, global_feat_savefile)
-
-        global_feat = global_feat.half().cuda()
-        global_feat = torch.nn.functional.normalize(global_feat, dim=-1)  # --> (1, 1024)
-        feat_dim = global_feat.shape[-1]
-
-        cosine_similarity = torch.nn.CosineSimilarity(dim=-1)
-
-
-        """
-        Extract per-mask features
-        """
-        # Output feature vector (semiglobal, 2x, 4x)
-        outfeat_sg = torch.zeros(LOAD_IMG_HEIGHT, LOAD_IMG_WIDTH, feat_dim, dtype=torch.half)
-        # outfeat_1x = torch.zeros(LOAD_IMG_HEIGHT, LOAD_IMG_WIDTH, feat_dim, dtype=torch.half)
-        # outfeat_2x = torch.zeros(LOAD_IMG_HEIGHT, LOAD_IMG_WIDTH, feat_dim, dtype=torch.half)
-        # outfeat_4x = torch.zeros(LOAD_IMG_HEIGHT, LOAD_IMG_WIDTH, feat_dim, dtype=torch.half)
-        # # outfeat_zseg = torch.zeros(LOAD_IMG_HEIGHT, LOAD_IMG_WIDTH, feat_dim, dtype=torch.half)
-
-        # print(f"Loading instance masks {maskfile}...")
-        mask = torch.load(maskfile).unsqueeze(0)  # 1, num_masks, H, W
-        mask = torch.nn.functional.interpolate(mask, [LOAD_IMG_HEIGHT, LOAD_IMG_WIDTH], mode="nearest")
-        num_masks = mask.shape[-3]
-        pallete = get_new_pallete(num_masks)
-
-        rois = []
-        roi_similarities_with_global_vec = []
-        roi_sim_per_unit_area = []
-        feat_per_roi = []
-        roi_nonzero_inds = []
-
-        for _i in range(num_masks):
-
-            # viz = torch.zeros(IMG_HEIGHT, IMG_WIDTH, 3)
-            curmask = mask[0, _i]
-            bbox, nonzero_inds = get_bbox_around_mask(curmask)
-            x0, y0, x1, y1 = bbox
-            # viz[x0:x1, y0:y1, 0] = 1.0
-
-            bbox_area = (x1 - x0 + 1) * (y1 - y0 + 1)
-            img_area = LOAD_IMG_WIDTH * LOAD_IMG_HEIGHT
-            iou = bbox_area / img_area
-
-            if iou < 0.005:
-                continue
-
-            # if iou < 0.25:
-            #     bboxes = sample_bboxes_around_bbox(bbox, LOAD_IMG_HEIGHT, LOAD_IMG_WIDTH, scales=[4])
-            #     _x0, _y0, _x1, _y1 = bboxes[0]
-            #     img_roi = img[_x0:_x1, _y0:_y1]
-            #     img_roi = Image.fromarray(img_roi.detach().cpu().numpy())
-            #     img_roi = preprocess(img_roi).unsqueeze(0).cuda()
-            #     roifeat = model.encode_image(img_roi)
-            #     roifeat = torch.nn.functional.normalize(roifeat, dim=-1)
-            #     outfeat_4x[nonzero_inds[:, 0], nonzero_inds[:, 1]] += roifeat[0].half().detach().cpu()
-            #     outfeat_4x[nonzero_inds[:, 0], nonzero_inds[:, 1]] = torch.nn.functional.normalize(
-            #         outfeat_4x[nonzero_inds[:, 0], nonzero_inds[:, 1]].float(), dim=-1
-            #     ).half()
-
-
-            # if iou < 0.5:
-            #     bboxes = sample_bboxes_around_bbox(bbox, LOAD_IMG_HEIGHT, LOAD_IMG_WIDTH, scales=[2])
-            #     _x0, _y0, _x1, _y1 = bboxes[0]
-            #     img_roi = img[_x0:_x1, _y0:_y1]
-            #     img_roi = Image.fromarray(img_roi.detach().cpu().numpy())
-            #     img_roi = preprocess(img_roi).unsqueeze(0).cuda()
-            #     roifeat = model.encode_image(img_roi)
-            #     roifeat = torch.nn.functional.normalize(roifeat, dim=-1)
-            #     outfeat_2x[nonzero_inds[:, 0], nonzero_inds[:, 1]] += roifeat[0].half().detach().cpu()
-            #     outfeat_2x[nonzero_inds[:, 0], nonzero_inds[:, 1]] = torch.nn.functional.normalize(
-            #         outfeat_2x[nonzero_inds[:, 0], nonzero_inds[:, 1]].float(), dim=-1
-            #     ).half()
-
-            # if iou < 0.75:
-
-            #     bboxes = sample_bboxes_around_bbox(bbox, LOAD_IMG_HEIGHT, LOAD_IMG_WIDTH, scales=[1])
-            #     _x0, _y0, _x1, _y1 = bboxes[0]
-            #     img_roi = img[_x0:_x1, _y0:_y1]
-            #     img_roi = Image.fromarray(img_roi.detach().cpu().numpy())
-            #     img_roi = preprocess(img_roi).unsqueeze(0).cuda()
-            #     roifeat = model.encode_image(img_roi)
-            #     roifeat = torch.nn.functional.normalize(roifeat, dim=-1)
-            #     outfeat_1x[nonzero_inds[:, 0], nonzero_inds[:, 1]] += roifeat[0].half().detach().cpu()
-            #     outfeat_1x[nonzero_inds[:, 0], nonzero_inds[:, 1]] = torch.nn.functional.normalize(
-            #         outfeat_1x[nonzero_inds[:, 0], nonzero_inds[:, 1]].float(), dim=-1
-            #     ).half()
-
-            # per-mask features
-            img_roi = img[x0:x1, y0:y1]
-            img_roi = Image.fromarray(img_roi.detach().cpu().numpy())
-            img_roi = preprocess(img_roi).unsqueeze(0).cuda()
-            roifeat = model.encode_image(img_roi)
-            roifeat = torch.nn.functional.normalize(roifeat, dim=-1)
-            feat_per_roi.append(roifeat)
-            roi_nonzero_inds.append(nonzero_inds)
-
-            _sim = cosine_similarity(global_feat, roifeat)
-
-            rois.append(torch.tensor(list(bbox)))
-            roi_similarities_with_global_vec.append(_sim)
-            roi_sim_per_unit_area.append(_sim)# / iou)
-            # print(f"{_sim.item():.3f}, {iou:.3f}, {_sim.item() / iou:.3f}")
-
-
-        """
-        global_clip_plus_mask_weighted
-        # """
-        rois = torch.stack(rois)
-        scores = torch.cat(roi_sim_per_unit_area).to(rois.device)
-        # nms not implemented for Long tensors
-        # nms on CUDA is not stable sorted; but the CPU version is
-        retained = torchvision.ops.nms(rois.float().cpu(), scores.cpu(), iou_threshold=1.0)
-        feat_per_roi = torch.cat(feat_per_roi, dim=0)  # N, 1024
-        
-        # print(f"retained {len(retained)} masks of {rois.shape[0]} total")
-        retained_rois = rois[retained]
-        retained_scores = scores[retained]
-        retained_feat = feat_per_roi[retained]
-        retained_nonzero_inds = []
-        for _roiidx in range(retained.shape[0]):
-            retained_nonzero_inds.append(roi_nonzero_inds[retained[_roiidx].item()])
-        
-        viz = torch.zeros(LOAD_IMG_HEIGHT, LOAD_IMG_WIDTH, 3)
-
-        mask_sim_mat = torch.nn.functional.cosine_similarity(
-            retained_feat[:, :, None], retained_feat.t()[None, :, :]
-        )
-        mask_sim_mat.fill_diagonal_(0.)
-        mask_sim_mat = mask_sim_mat.mean(1)  # avg sim of each mask with each other mask
-        softmax_scores = retained_scores.cuda() - mask_sim_mat
-        softmax_scores = torch.nn.functional.softmax(softmax_scores, dim=0)
-        # retained_scores = retained_scores.cuda() * mask_sim_mat
-        # softmax_scores = torch.nn.functional.softmax(retained_scores, dim=0).cuda()
-        for _roiidx in range(retained.shape[0]):
-            _weighted_feat = softmax_scores[_roiidx] * global_feat + (1 - softmax_scores[_roiidx]) * retained_feat[_roiidx]
-            _weighted_feat = torch.nn.functional.normalize(_weighted_feat, dim=-1)
-            outfeat_sg[retained_nonzero_inds[_roiidx][:, 0], retained_nonzero_inds[_roiidx][:, 1]] += _weighted_feat[0].detach().cpu().half()
-            outfeat_sg[retained_nonzero_inds[_roiidx][:, 0], retained_nonzero_inds[_roiidx][:, 1]] = torch.nn.functional.normalize(
-                outfeat_sg[retained_nonzero_inds[_roiidx][:, 0], retained_nonzero_inds[_roiidx][:, 1]].float(), dim=-1
-            ).half()
-
-        outfeat_sg = outfeat_sg.unsqueeze(0).float()  # interpolate is not implemented for float yet in pytorch
-        outfeat_sg = outfeat_sg.permute(0, 3, 1, 2)  # 1, H, W, feat_dim -> 1, feat_dim, H, W
-        outfeat_sg = torch.nn.functional.interpolate(outfeat_sg, [TGT_IMG_HEIGHT, TGT_IMG_WIDTH], mode="nearest")
-        outfeat_sg = outfeat_sg.permute(0, 2, 3, 1)  # 1, feat_dim, H, W --> 1, H, W, feat_dim
-        outfeat_sg = torch.nn.functional.normalize(outfeat_sg, dim=-1)
-        outfeat_sg = outfeat_sg[0].half() # --> H, W, feat_dim
+        outfeat_sg, global_feat = get_image_features_sg(imgfile, maskfile)
 
         outfile = os.path.join(semiglobal_feat_savedir, stem + ".pt")
         # print(f"Saving semiglobal feat to {outfile}...")
         # torch.save(outfeat_sg, outfile)
         print('Shape: ', outfeat_sg.shape)
+
+        global_feat_savefile = os.path.join(global_feat_savedir, stem + ".pt")
+        # tqdm.write(f"Saving to {global_feat_savefile} \n")
+        # torch.save(global_feat, global_feat_savefile)
+
+if __name__ == "__main__":
+    main()
