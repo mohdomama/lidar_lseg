@@ -124,27 +124,6 @@ OPENCLIP_PRETRAINED_DATASET = "laion2b_s32b_b79k"
 # FEAT_DIM = 1024
 
 
-def get_parser():
-    parser = argparse.ArgumentParser(description="Extract CLIP features")
-    parser.add_argument(
-        "--imgdir",
-        type=str,
-        required=True,
-        help="Directory containing input image files",
-    )
-    parser.add_argument(
-        "--maskdir",
-        type=str,
-        required=True,
-        help="Directory containing input instance masks",
-    )
-    parser.add_argument(
-        "--outdir",
-        type=str,
-        required=True,
-        help="Directory to save clip features to",
-    )
-    return parser
 
 
 def get_image_features_sg(imgfile, maskfile, model, preprocess):
@@ -284,11 +263,6 @@ def get_image_features_sg(imgfile, maskfile, model, preprocess):
 def main():
     torch.autograd.set_grad_enabled(False)
 
-    args = get_parser().parse_args()
-
-    maskfiles = natsorted(glob.glob(os.path.join(args.maskdir, "*.pt")))
-    if len(maskfiles) == 0:
-        raise ValueError(f"No instance masks (*.pt files) found in {args.maskdir}")
 
     print(f"Initializing OpenCLIP model: {OPENCLIP_MODEL} pre-trained on {OPENCLIP_PRETRAINED_DATASET}...")
     model, _, preprocess = open_clip.create_model_and_transforms(
@@ -297,19 +271,6 @@ def main():
     model.cuda()
     model.eval()
     tokenizer = open_clip.get_tokenizer(OPENCLIP_MODEL)
-
-    global_feat_savedir = os.path.join(args.outdir, "feat_global")
-    os.makedirs(global_feat_savedir, exist_ok=True)
-    semiglobal_feat_savedir = os.path.join(args.outdir, "feat_semiglobal")
-    os.makedirs(semiglobal_feat_savedir, exist_ok=True)
-    # local_feat_savedir_zseg = os.path.join(args.outdir, "feat_local_zseg")
-    # os.makedirs(local_feat_savedir_zseg, exist_ok=True)
-    local_feat_savedir_1x = os.path.join(args.outdir, "feat_local_1x")
-    os.makedirs(local_feat_savedir_1x, exist_ok=True)
-    local_feat_savedir_2x = os.path.join(args.outdir, "feat_local_2x")
-    os.makedirs(local_feat_savedir_2x, exist_ok=True)
-    local_feat_savedir_4x = os.path.join(args.outdir, "feat_local_4x")
-    os.makedirs(local_feat_savedir_4x, exist_ok=True)
 
     with open('data/zerofusion/cherry_picked_frames.pkl', 'rb') as f:
         frames = pickle.load(f)
@@ -320,25 +281,14 @@ def main():
         maskfile = 'data/zerofusion/cherrypicked/'+ sequence + '_' + str(frame).zfill(6) + '.pt' 
         imgfile = kitti_path + 'image_2/' + str(frame).zfill(6) + '.png'
         stem = os.path.splitext(os.path.basename(maskfile))[0]
-        if not os.path.exists(imgfile):
-            imgfile = os.path.join(args.imgdir, stem + ".png")
-            if not os.path.exists(imgfile):
-                raise ValueError(f"No file {stem} (.png / .jpg) in {args.imgdir}")
-
         """
         Load masks, sample boxes
         """
         
         outfeat_sg, global_feat = get_image_features_sg(imgfile, maskfile, model, preprocess)
 
-        outfile = os.path.join(semiglobal_feat_savedir, stem + ".pt")
-        # print(f"Saving semiglobal feat to {outfile}...")
-        # torch.save(outfeat_sg, outfile)
-        print('Shape: ', outfeat_sg.shape)
 
-        global_feat_savefile = os.path.join(global_feat_savedir, stem + ".pt")
-        # tqdm.write(f"Saving to {global_feat_savefile} \n")
-        # torch.save(global_feat, global_feat_savefile)
+        print('Shape: ', outfeat_sg.shape)
 
 if __name__ == "__main__":
     main()

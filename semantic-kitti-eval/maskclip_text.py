@@ -14,14 +14,15 @@ from sklearn.metrics import jaccard_score, confusion_matrix, accuracy_score, cla
 from clipseg import CLIPDensePredT
 from torchvision import transforms
 import time
-
+import sys
+sys.path.append('/scratch/padfoot7/maskclip-edit/tools/maskclip_utils/')
 from mmseg.apis import inference_segmentor, init_segmentor, show_result_pyplot
 from mmseg.apis.inference import LoadImage
 from mmcv.parallel import collate, scatter
 from mmseg.core.evaluation import get_palette
 import mmcv
 import torch
-from tools.maskclip_utils.prompt_engineering import zeroshot_classifier, prompt_templates
+from prompt_engineering import zeroshot_classifier, prompt_templates
 from test_clipseg import get_new_pallete
 
 torch.cuda.empty_cache()
@@ -149,13 +150,25 @@ def main():
     # build the model from a config file and a checkpoint file
     model = init_segmentor(config, checkpoint_file, device='cuda:0')
 
+    # Model TExt
+    model_text, preprocess = clip.load("ViT-B/16")
+    model_text.cuda()
+
     # Prompts for MaskCLIP
     text_embeddings = zeroshot_classifier('ViT-B/16', Lseg_Prompts, prompt_templates)
     text_embeddings = text_embeddings.permute(1, 0).float()
 
+    # Text Embeddings from standard clip
+    text_feats_all = []
+    for prompt in Lseg_Prompts:
+        prompt = clip.tokenize(prompt)
+        prompt = prompt.cuda()
+        text_feat = model_text.encode_text(prompt)  # 1, 512
+        text_feat /= text_feat.norm(dim=-1, keepdim=True)
+        text_feats_all.append(text_feat[0])
+    text_feats_all = torch.vstack(text_feats_all)
+    
     cosine_similarity = torch.nn.CosineSimilarity(dim=2)
-    cosine_similarity2 = torch.nn.CosineSimilarity(dim=3)
-    clip_text_encoder, preprocess = clip.load("ViT-B/16", device="cuda", jit=False)
 
 
     kitti_config_data = yaml.safe_load(open(args.semantic_kitti_api_config, 'r'))
@@ -275,6 +288,7 @@ def main():
         # cv2.imwrite('data/maskclip.png', pallete[pred_img].cpu().numpy()*255)
         # breakpoint()
         similarity = cosine_similarity(pcd_feat.unsqueeze(0), text_embeddings.unsqueeze(1))
+        # similarity = cosine_similarity2(pcd_feat, text_embeddings)
         
         pred = similarity.argmax(axis=0).detach().cpu().numpy()
         
@@ -324,11 +338,11 @@ def main():
     # cm = confusion_matrix(y_true=labels_seq, y_pred=preds_seq)
     cm_pred = confusion_matrix(y_true=labels_seq, y_pred=preds_seq, normalize='pred')
     cm_true = confusion_matrix(y_true=labels_seq, y_pred=preds_seq, normalize='true')
-    cm = confusion_matrix(y_true=labels_seq, y_pred=preds_seq)
-    plt.matshow(cm_pred)
-    plt.savefig(fname='data/'+sequence+'cm_pred.png', dpi=500)
-    plt.matshow(cm_true)
-    plt.savefig(fname='data/'+sequence+'cm_true.png', dpi=500)
+    # cm = confusion_matrix(y_true=labels_seq, y_pred=preds_seq)
+    # plt.matshow(cm_pred)
+    # plt.savefig(fname='data/'+sequence+'cm_pred.png', dpi=500)
+    # plt.matshow(cm_true)
+    # plt.savefig(fname='data/'+sequence+'cm_true.png', dpi=500)
 
 if __name__ == '__main__':
     main()
