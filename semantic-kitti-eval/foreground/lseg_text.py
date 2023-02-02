@@ -2,6 +2,7 @@ from util.o3d_util import visualize_multiple_pcd
 from util.kitti_util import KittiUtil
 from matplotlib import pyplot as plt
 import numpy as np
+from lseg import LSegNet
 from pathlib import Path
 from typing import Union
 import tyro
@@ -15,11 +16,6 @@ import os
 from tqdm import tqdm
 from sklearn.metrics import jaccard_score, confusion_matrix, accuracy_score, classification_report
 import pickle
-from extract_clip_features import get_image_features_sg
-import open_clip
-
-OPENCLIP_MODEL = "ViT-H-14"
-OPENCLIP_PRETRAINED_DATASET = "laion2b_s32b_b79k"
 
 
 torch.cuda.empty_cache()
@@ -40,6 +36,34 @@ class ProgramArgs:
     filter_distance: bool = field(default=False)
     distance_limit: int = 10
     
+
+    # Needed for LSEG
+    backbone: str = "clip_vitl16_384"
+    num_features: int = 256
+    arch_option: int = 0
+    block_depth: int = 0
+    activation: str = "lrelu"
+    crop_size: int = 480
+
+
+def get_img_feat(img, net):
+    '''
+    img -> RGB (0, 255)
+    '''
+    # Load the input image
+    with torch.no_grad():
+        img = cv2.resize(img, (640, 480))
+        img = torch.from_numpy(img).float() / 255.0
+        img = img[..., :3]  # drop alpha channel, if present
+        img = img.cuda()
+        img = img.permute(2, 0, 1)  # C, H, W
+        img = img.unsqueeze(0)  # 1, C, H, W
+
+        # Extract per-pixel CLIP features (1, 512, H // 2, W // 2)
+        img_feat = net.forward(img)
+        # Normalize features (per-pixel unit vectors)
+        img_feat_norm = torch.nn.functional.normalize(img_feat, dim=1)
+    return img_feat_norm
 
 
 Classes_Prompts = [
@@ -91,16 +115,20 @@ for key in LABEL_MAP_LSEG_DICT.keys():
 
 
 def main():
+    # Lseg
     args = tyro.cli(ProgramArgs)
-
-    # ZeroFusion
-    torch.autograd.set_grad_enabled(False)
-    model, _, preprocess = open_clip.create_model_and_transforms(
-        OPENCLIP_MODEL, OPENCLIP_PRETRAINED_DATASET
+    net = LSegNet(
+        backbone=args.backbone,
+        features=args.num_features,
+        crop_size=args.crop_size,
+        arch_option=args.arch_option,
+        block_depth=args.block_depth,
+        activation=args.activation,
     )
-    model.cuda()
-    model.eval()
-    tokenizer = open_clip.get_tokenizer(OPENCLIP_MODEL)
+
+    net.load_state_dict(torch.load(str(args.checkpoint_path)))
+    net.eval()
+    net.cuda()
 
     cosine_similarity = torch.nn.CosineSimilarity(dim=2)
 
@@ -116,11 +144,16 @@ def main():
     sequence = args.sequence
     kitti_path = args.kitti_dataset + 'sequences/' + sequence + '/'
     out_path = args.semantic_preds_dir + 'sequences/' + sequence + '/'
-    os.makedirs(out_path+'predictions/', exist_ok=True)
-    os.makedirs(out_path+'masks/', exist_ok=True)
+    # os.makedirs(out_path+'predictions/', exist_ok=True)
+    # os.makedirs(out_path+'masks/', exist_ok=True)
     # Custom utils
     kitti_util = KittiUtil(kitti_path+'calib.txt')
 
+    # image
+    pcd_map = []
+    pcd_feat_map = []
+    pcd_color_map = []
+    clip_text_encoder = net.clip_pretrained.encode_text
 
     # For lables
     # make lookup table for mapping
@@ -133,30 +166,19 @@ def main():
     labels_seq = []
     preds_seq = []
     unqlabel_seq = []
-    error_count = 0
-
+    
     with open('data/zerofusion/cherry_picked_frames.pkl', 'rb') as f:
         frames = pickle.load(f)
 
     for sequence, frame in tqdm(frames): 
-
         kitti_path = args.kitti_dataset + 'sequences/' + sequence + '/'
-        kitti_util = KittiUtil(kitti_path+'calib.txt')
         frame = int(frame)
-
-        # For ZeroFusion
-        maskfile = 'data/zerofusion/cherrypicked/'+ sequence + '_' + str(frame).zfill(6) + '.pt' 
-        imgfile = kitti_path + 'image_2/' + str(frame).zfill(6) + '.png'
-        
-
         img = kitti_util.load_img(
             kitti_path + 'image_2/' + str(frame).zfill(6) + '.png')  # HxWxC
-        
-        img = cv2.resize(img, (1226,370))
 
         pcd = kitti_util.load_pcd(
             kitti_path + 'velodyne/' + str(frame).zfill(6) + '.bin')
-        
+
         if args.crop:
             img = img[:, args.width_min:args.width_max, :]
 
@@ -177,6 +199,7 @@ def main():
 
         if args.filter_distance:
             mask[np.where(dis>args.distance_limit)[0]] = 0
+
 
         # x = Pi * T * X  | Lidar to camera projection
         pts_cam = kitti_util.velo_to_cam(pcd, 2)
@@ -199,38 +222,32 @@ def main():
         # Somehow this returns a tuple of len 2
         mask_idx = np.where([mask > 0])[1]
 
-        # Project lidar points on camera plane
-        # img[pts_cam[mask_idx, 1], pts_cam[mask_idx, 0], :] = (255, 0, 0)
-        # plt.imshow(img)
-        # plt.show()
-
         # Getting image features
-        try:
-            img_feat, global_feat = get_image_features_sg(imgfile, maskfile, model, preprocess)
-        except Exception as e:
-            print('Error in features: ', e)
-            error_count +=1
-            continue
-
+        img_feat = get_img_feat(img, net)
 
         # Features in PCD Space
+        img_feat = torch.nn.functional.interpolate(img_feat, (img.shape[0], img.shape[1]), mode="bilinear", align_corners=True)
+        img_feat = torch.permute(img_feat[0], (1,2,0))
+
         if args.crop:
             pcd_feat = img_feat[pts_cam[mask_idx, 1], pts_cam[mask_idx, 0]-args.width_min, :]
         else:
             pcd_feat = img_feat[pts_cam[mask_idx, 1], pts_cam[mask_idx, 0], :]
 
+        pcd = torch.tensor(pcd[mask_idx])
+
         text_feats_all = []
         for prompt in Lseg_Prompts:
             prompt = clip.tokenize(prompt)
             prompt = prompt.cuda()
-            text_feat = model.encode_text(prompt)  # 1, 512
+            text_feat = clip_text_encoder(prompt)  # 1, 512
             text_feat_norm = torch.nn.functional.normalize(
                 text_feat, dim=1)
             text_feats_all.append(text_feat_norm[0])
-        text_feats_all = torch.vstack(text_feats_all).detach().cpu()
+        text_feats_all = torch.vstack(text_feats_all)
 
-        similarity = cosine_similarity(pcd_feat.unsqueeze(0), text_feats_all.unsqueeze(1))
-
+        similarity = cosine_similarity(pcd_feat.unsqueeze(
+            0), text_feats_all.unsqueeze(1))
         
         pred = similarity.argmax(axis=0).detach().cpu().numpy()
 
@@ -246,21 +263,20 @@ def main():
 
         unqlabel_seq.extend(unqlabel.tolist())
         unqlabel_seq = np.unique(unqlabel_seq).tolist()
+        
+        np.save(out_path+'predictions/' + str(frame).zfill(6) + '.npy', preds_all)
+        np.save(out_path+'masks/' + str(frame).zfill(6) + '.npy', mask)
+    #### End for #########
 
-    
-    
+
     labels_to_use = [1,2,3,4,9]
 
     unqlabel_seq = np.sort(unqlabel_seq).tolist()
 
     labels_seq = np.array(labels_seq)
-    # labels_seq_valid_idx = np.where(
-    #     (labels_seq==1) | (labels_seq==2) | (labels_seq==3) | (labels_seq==4) | (labels_seq==9) 
-    #     )
     labels_seq_valid_idx = np.where(
-        (labels_seq==1) | (labels_seq==2) | (labels_seq==3) | (labels_seq==4)
+        (labels_seq==1) | (labels_seq==2) | (labels_seq==3) | (labels_seq==4) | (labels_seq==9) 
         )
-
 
     labels_seq = labels_seq[labels_seq_valid_idx]
 
@@ -285,9 +301,6 @@ def main():
 
     # print(report)
     print(accuracy,',', wmiou, ',', miou)
-    print('Error Count: ', error_count)
-    breakpoint()
-
 
 if __name__ == '__main__':
     main()

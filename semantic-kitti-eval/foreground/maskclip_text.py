@@ -1,37 +1,41 @@
-from util.o3d_util import visualize_multiple_pcd
 from util.kitti_util import KittiUtil
 from matplotlib import pyplot as plt
 import numpy as np
-from pathlib import Path
-from typing import Union
+from lseg import LSegNet
 import tyro
 from dataclasses import dataclass, field
 import torch
 import cv2
 import clip
 import yaml
-import time
 import os
 from tqdm import tqdm
 from sklearn.metrics import jaccard_score, confusion_matrix, accuracy_score, classification_report
+from clipseg import CLIPDensePredT
+from torchvision import transforms
+import time
+import sys
+sys.path.append('/scratch/padfoot7/maskclip-edit/tools/maskclip_utils/')
+from mmseg.apis import inference_segmentor, init_segmentor, show_result_pyplot
+from mmseg.apis.inference import LoadImage
+from mmcv.parallel import collate, scatter
+from mmseg.core.evaluation import get_palette
+import mmcv
+import torch
+from prompt_engineering import zeroshot_classifier, prompt_templates
+from test_clipseg import get_new_pallete
 import pickle
-from extract_clip_features import get_image_features_sg
-import open_clip
-
-OPENCLIP_MODEL = "ViT-H-14"
-OPENCLIP_PRETRAINED_DATASET = "laion2b_s32b_b79k"
-
 
 torch.cuda.empty_cache()
 
 
 @dataclass
 class ProgramArgs:
-    checkpoint_path: str = "data/lseg_minimal_e200.ckpt"
+    checkpoint_path: str = "../../maskclip-edit/pretrain/ViT16_clip_backbone.pth"
     kitti_dataset: str = "data/SEMANTIC-KITTI-DATASET/"
     sequence: str = "08"
     semantic_kitti_api_config: str = 'packages/semantic-kitti-api/config/semantic-kitti.yaml'
-    semantic_preds_dir: str = 'data/SemanticSeg/SemanticKITTI/lseg_text/'
+    semantic_preds_dir: str = 'data/SemanticSeg/SemanticKITTI/maskclip_text/'
 
     crop: bool = field(default=False)
     width_min: int = 293
@@ -40,6 +44,43 @@ class ProgramArgs:
     filter_distance: bool = field(default=False)
     distance_limit: int = 10
     
+
+    # # Needed for LSEG
+    # backbone: str = "clip_vitl16_384"
+    # num_features: int = 256
+    # arch_option: int = 0
+    # block_depth: int = 0
+    # activation: str = "lrelu"
+    # crop_size: int = 480
+
+
+def inference_segmentor_km(model, img, return_feat=True):
+    """Inference image(s) with the segmentor.
+
+    Args:
+        model (nn.Module): The loaded segmentor.
+        imgs (str/ndarray or list[str/ndarray]): Either image files or loaded
+            images.
+
+    Returns:
+        (list[Tensor]): The segmentation result.
+    """
+    img = torch.from_numpy(img).float() / 255.
+    img = img[..., :3]  # drop alpha channel, if present
+    img = img.cuda()
+    img = img.permute(2, 0, 1)  # C, H, W
+    img = img.unsqueeze(0)  # 1, C, H, W
+
+    imgs = [img]
+    img_metas = [[{'ori_shape': img.shape, 'img_shape': img.shape, 'pad_shape': img.shape}]]
+
+    # forward the model
+    with torch.no_grad():
+        # result = model.extract_feat(data['img'][0], return_feat=True)
+        # print(result[0][3].shape)
+        # result, feat = model.encode_decode(data["img"][0], data["img_metas"][0], return_feat=True)
+        result, feat = model.encode_decode(img, img_metas, return_feat=True, upsample_feat=True)
+    return result, feat
 
 
 Classes_Prompts = [
@@ -50,7 +91,7 @@ Classes_Prompts = [
 ]
 
 Lseg_Prompts = [
-    "other",            # 0            
+    "skateboard",      # 0            
     "car",              # 1    
     "bicycle",          # 2        
     "motorcycle",       # 3            
@@ -92,17 +133,44 @@ for key in LABEL_MAP_LSEG_DICT.keys():
 
 def main():
     args = tyro.cli(ProgramArgs)
+    # ClipSeg
+    fg_classes = Lseg_Prompts
+    bg_classes = []
 
-    # ZeroFusion
-    torch.autograd.set_grad_enabled(False)
-    model, _, preprocess = open_clip.create_model_and_transforms(
-        OPENCLIP_MODEL, OPENCLIP_PRETRAINED_DATASET
-    )
-    model.cuda()
-    model.eval()
-    tokenizer = open_clip.get_tokenizer(OPENCLIP_MODEL)
+    config_file = '../maskclip-edit/configs/maskclip/maskclip_vit16_640x480_icl_km.py'
+    config = mmcv.Config.fromfile(config_file)
+    checkpoint_file = '../maskclip-edit/pretrain/ViT16_clip_backbone.pth'
 
+    num_classes = len(fg_classes + bg_classes)
+    config.model.decode_head.num_classes = num_classes
+    config.model.decode_head.text_categories = num_classes
+
+    config.data.test.fg_classes = fg_classes
+    config.data.test.bg_classes = bg_classes
+
+    # build the model from a config file and a checkpoint file
+    model = init_segmentor(config, checkpoint_file, device='cuda:0')
+
+    # Model TExt
+    model_text, preprocess = clip.load("ViT-B/16")
+    model_text.cuda()
+
+    # Prompts for MaskCLIP
+    text_embeddings = zeroshot_classifier('ViT-B/16', Lseg_Prompts, prompt_templates)
+    text_embeddings = text_embeddings.permute(1, 0).float()
+
+    # Text Embeddings from standard clip
+    text_feats_all = []
+    for prompt in Lseg_Prompts:
+        prompt = clip.tokenize(prompt)
+        prompt = prompt.cuda()
+        text_feat = model_text.encode_text(prompt)  # 1, 512
+        text_feat /= text_feat.norm(dim=-1, keepdim=True)
+        text_feats_all.append(text_feat[0])
+    text_feats_all = torch.vstack(text_feats_all)
+    
     cosine_similarity = torch.nn.CosineSimilarity(dim=2)
+
 
     kitti_config_data = yaml.safe_load(open(args.semantic_kitti_api_config, 'r'))
     # kitti_config_data['color_map'][kitti_config_data['learning_map_inv'][pred]]
@@ -121,7 +189,7 @@ def main():
     # Custom utils
     kitti_util = KittiUtil(kitti_path+'calib.txt')
 
-
+    
     # For lables
     # make lookup table for mapping
     class_remap = kitti_config_data["learning_map"]
@@ -133,30 +201,21 @@ def main():
     labels_seq = []
     preds_seq = []
     unqlabel_seq = []
-    error_count = 0
-
+    
     with open('data/zerofusion/cherry_picked_frames.pkl', 'rb') as f:
         frames = pickle.load(f)
 
     for sequence, frame in tqdm(frames): 
-
         kitti_path = args.kitti_dataset + 'sequences/' + sequence + '/'
-        kitti_util = KittiUtil(kitti_path+'calib.txt')
         frame = int(frame)
-
-        # For ZeroFusion
-        maskfile = 'data/zerofusion/cherrypicked/'+ sequence + '_' + str(frame).zfill(6) + '.pt' 
-        imgfile = kitti_path + 'image_2/' + str(frame).zfill(6) + '.png'
-        
+        kitti_util = KittiUtil(kitti_path+'calib.txt')
 
         img = kitti_util.load_img(
             kitti_path + 'image_2/' + str(frame).zfill(6) + '.png')  # HxWxC
-        
-        img = cv2.resize(img, (1226,370))
 
         pcd = kitti_util.load_pcd(
             kitti_path + 'velodyne/' + str(frame).zfill(6) + '.bin')
-        
+
         if args.crop:
             img = img[:, args.width_min:args.width_max, :]
 
@@ -177,6 +236,7 @@ def main():
 
         if args.filter_distance:
             mask[np.where(dis>args.distance_limit)[0]] = 0
+
 
         # x = Pi * T * X  | Lidar to camera projection
         pts_cam = kitti_util.velo_to_cam(pcd, 2)
@@ -205,35 +265,23 @@ def main():
         # plt.show()
 
         # Getting image features
-        try:
-            img_feat, global_feat = get_image_features_sg(imgfile, maskfile, model, preprocess)
-        except Exception as e:
-            print('Error in features: ', e)
-            error_count +=1
-            continue
+        _, img_feat = inference_segmentor_km(model, img)
+        img_feat = torch.nn.functional.normalize(img_feat, dim=1)
+        img_feat = torch.permute(img_feat[0], (1,2,0))
+        
+        
 
-
-        # Features in PCD Space
         if args.crop:
             pcd_feat = img_feat[pts_cam[mask_idx, 1], pts_cam[mask_idx, 0]-args.width_min, :]
         else:
             pcd_feat = img_feat[pts_cam[mask_idx, 1], pts_cam[mask_idx, 0], :]
 
-        text_feats_all = []
-        for prompt in Lseg_Prompts:
-            prompt = clip.tokenize(prompt)
-            prompt = prompt.cuda()
-            text_feat = model.encode_text(prompt)  # 1, 512
-            text_feat_norm = torch.nn.functional.normalize(
-                text_feat, dim=1)
-            text_feats_all.append(text_feat_norm[0])
-        text_feats_all = torch.vstack(text_feats_all).detach().cpu()
+        pcd = torch.tensor(pcd[mask_idx])
 
-        similarity = cosine_similarity(pcd_feat.unsqueeze(0), text_feats_all.unsqueeze(1))
-
+        similarity = cosine_similarity(pcd_feat.unsqueeze(0), text_embeddings.unsqueeze(1))
+        # similarity = cosine_similarity2(pcd_feat, text_embeddings)
         
         pred = similarity.argmax(axis=0).detach().cpu().numpy()
-
         preds_all[mask_idx] = pred
         label = label[mask_idx]
         label = LABEL_MAP_LSEG[label]
@@ -246,21 +294,18 @@ def main():
 
         unqlabel_seq.extend(unqlabel.tolist())
         unqlabel_seq = np.unique(unqlabel_seq).tolist()
+        
+        # np.save(out_path+'predictions/' + str(frame).zfill(6) + '.npy', preds_all)
+        # np.save(out_path+'masks/' + str(frame).zfill(6) + '.npy', mask)
 
-    
-    
     labels_to_use = [1,2,3,4,9]
 
     unqlabel_seq = np.sort(unqlabel_seq).tolist()
 
     labels_seq = np.array(labels_seq)
-    # labels_seq_valid_idx = np.where(
-    #     (labels_seq==1) | (labels_seq==2) | (labels_seq==3) | (labels_seq==4) | (labels_seq==9) 
-    #     )
     labels_seq_valid_idx = np.where(
-        (labels_seq==1) | (labels_seq==2) | (labels_seq==3) | (labels_seq==4)
+        (labels_seq==1) | (labels_seq==2) | (labels_seq==3) | (labels_seq==4) 
         )
-
 
     labels_seq = labels_seq[labels_seq_valid_idx]
 
@@ -285,9 +330,6 @@ def main():
 
     # print(report)
     print(accuracy,',', wmiou, ',', miou)
-    print('Error Count: ', error_count)
-    breakpoint()
-
 
 if __name__ == '__main__':
     main()
