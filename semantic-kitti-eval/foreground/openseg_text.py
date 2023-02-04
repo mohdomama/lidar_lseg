@@ -15,6 +15,7 @@ from sklearn.metrics import jaccard_score, confusion_matrix, accuracy_score, cla
 
 import tensorflow.compat.v1 as tf
 import tensorflow as tf2
+import pickle
 
 # os.environ["CUDA_DEVICE_ORDER"]="PCI_BUS_ID"
 # os.environ["CUDA_VISIBLE_DEVICES"]="0,1,2,3"
@@ -221,7 +222,15 @@ def main():
     preds_seq = []
     unqlabel_seq = []
     print('Running Inference!')
-    for frame in tqdm(range(len(os.listdir(kitti_path+'velodyne/')))):
+
+    with open('data/zerofusion/cherry_picked_frames.pkl', 'rb') as f:
+        frames = pickle.load(f)
+
+    for sequence, frame in tqdm(frames): 
+        kitti_path = args.kitti_dataset + 'sequences/' + sequence + '/'
+        kitti_util = KittiUtil(kitti_path+'calib.txt')
+        frame = int(frame)
+
         imgfile = kitti_path + 'image_2/' + str(frame).zfill(6) + '.png'
         img = kitti_util.load_img(imgfile)  # HxWxC
         if args.crop:
@@ -299,7 +308,7 @@ def main():
         
         segm_pred = torch.nn.functional.interpolate(
             input=torch.tensor(segm_pred, dtype=torch.float32).unsqueeze(0).unsqueeze(0), 
-            size=[image_height, image_width], mode='nearest'
+            size=[image_height, image_width], mode='nearest-exact'
         ).numpy().astype(int)[0][0]
 
         if args.crop:
@@ -324,20 +333,34 @@ def main():
         del output, pred
         ### End for Loop
 
+    labels_to_use = [1,2,3,4,9]
+
     unqlabel_seq = np.sort(unqlabel_seq).tolist()
+
     labels_seq = np.array(labels_seq)
+    # labels_seq_valid_idx = np.where(
+    #     (labels_seq==1) | (labels_seq==2) | (labels_seq==3) | (labels_seq==4) | (labels_seq==9) 
+    #     )
+    labels_seq_valid_idx = np.where(
+        (labels_seq==1) | (labels_seq==2) | (labels_seq==3) | (labels_seq==4)
+        )
+
+
+    labels_seq = labels_seq[labels_seq_valid_idx]
+
     preds_seq = np.array(preds_seq)
-    miou = jaccard_score(y_true=labels_seq, y_pred=preds_seq, average='macro', labels=unqlabel_seq)
-    wmiou = jaccard_score(y_true=labels_seq, y_pred=preds_seq, average='weighted', labels=unqlabel_seq)
-    iou_all = jaccard_score(y_true=labels_seq, y_pred=preds_seq, average=None, labels=unqlabel_seq)
+    preds_seq = preds_seq[labels_seq_valid_idx]
+    
+    miou = jaccard_score(y_true=labels_seq, y_pred=preds_seq, average='macro', labels=np.unique(labels_seq))
+    wmiou = jaccard_score(y_true=labels_seq, y_pred=preds_seq, average='weighted', labels=np.unique(labels_seq))
+    iou_all = jaccard_score(y_true=labels_seq, y_pred=preds_seq, average=None, labels=np.unique(labels_seq))
     
     accuracy = accuracy_score(y_true=labels_seq, y_pred=preds_seq, )
-    accuracy = accuracy_score(y_true=labels_seq[labels_seq!=0], y_pred=preds_seq[labels_seq!=0], )
-    report = classification_report(y_true=labels_seq, y_pred=preds_seq, labels=unqlabel_seq)
+    accuracy = accuracy_score(y_true=labels_seq, y_pred=preds_seq, )
 
     print('\n')
     for i in range(len(iou_all)):
-        print(Lseg_Prompts[unqlabel_seq[i]], '\t', iou_all[i])
+        print(Lseg_Prompts[np.unique(labels_seq)[i]], '\t', iou_all[i])
 
     print()
     print('MIOU: ', miou)

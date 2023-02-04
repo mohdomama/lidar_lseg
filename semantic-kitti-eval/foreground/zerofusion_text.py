@@ -51,7 +51,7 @@ Classes_Prompts = [
 
 Lseg_Prompts = [
     "other",            # 0            
-    "car",              # 1    
+    "cars",             # 1    
     "bicycle",          # 2        
     "motorcycle",       # 3            
     "person",           # 4        
@@ -286,7 +286,17 @@ def main():
     # print(report)
     print(accuracy,',', wmiou, ',', miou)
     print('Error Count: ', error_count)
+
+    # cm = confusion_matrix(y_true=labels_seq, y_pred=preds_seq)
+    cm_pred = confusion_matrix(y_true=labels_seq, y_pred=preds_seq, normalize='pred')
+    cm_true = confusion_matrix(y_true=labels_seq, y_pred=preds_seq, normalize='true')
+    cm = confusion_matrix(y_true=labels_seq, y_pred=preds_seq)
+    plt.matshow(cm_pred)
+    plt.savefig(fname='data/'+'zero_'+'cm_pred.png', dpi=500)
+    plt.matshow(cm_true)
+    plt.savefig(fname='data/'+'zero_'+'cm_true.png', dpi=500)
     breakpoint()
+
 
 
 if __name__ == '__main__':
