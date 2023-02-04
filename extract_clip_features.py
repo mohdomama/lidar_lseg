@@ -147,7 +147,7 @@ def get_parser():
     return parser
 
 
-def get_image_features_sg(imgfile, maskfile, model, preprocess):
+def get_image_features_sg(imgfile, maskfile, model, preprocess, semiflobal_off=False):
      # print("Reading image...")
     img = cv2.imread(imgfile)
     img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
@@ -262,6 +262,10 @@ def get_image_features_sg(imgfile, maskfile, model, preprocess):
     softmax_scores = torch.nn.functional.softmax(softmax_scores, dim=0)
     # retained_scores = retained_scores.cuda() * mask_sim_mat
     # softmax_scores = torch.nn.functional.softmax(retained_scores, dim=0).cuda()
+
+    if semiflobal_off:
+        softmax_scores = softmax_scores * 0 + 1
+
     for _roiidx in range(retained.shape[0]):
         _weighted_feat = softmax_scores[_roiidx] * global_feat + (1 - softmax_scores[_roiidx]) * retained_feat[_roiidx]
         _weighted_feat = torch.nn.functional.normalize(_weighted_feat, dim=-1)

@@ -206,7 +206,7 @@ def main():
 
         # Getting image features
         try:
-            img_feat, global_feat = get_image_features_sg(imgfile, maskfile, model, preprocess)
+            img_feat, global_feat = get_image_features_sg(imgfile, maskfile, model, preprocess, semiflobal_off=True)
         except Exception as e:
             print('Error in features: ', e)
             error_count +=1
