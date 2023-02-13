@@ -2,12 +2,16 @@ from util.o3d_util import visualize_multiple_pcd, pick_points, create_o3d_pcd
 from util.kitti_util import KittiUtil
 from matplotlib import pyplot as plt
 import numpy as np
+np.random.seed(1)
 from lseg import LSegNet
 from pathlib import Path
 from typing import Union
 import tyro
 from dataclasses import dataclass
 import torch
+torch.manual_seed(2)
+import random
+random.seed(0)
 import cv2
 import clip
 import rospy
@@ -112,7 +116,7 @@ def main():
     
     # Initialize a KMeans clustering module
     kmeans = fpk.KMeans(
-        n_clusters=args.num_clusters, mode=args.distance_type, verbose=1
+        n_clusters=args.num_clusters, mode=args.distance_type, verbose=1, 
     )
 
     # Cluster the map embeddings
@@ -122,16 +126,23 @@ def main():
     # Visualize
     pallete = get_new_pallete(args.num_clusters + 1)
     pallete = pallete[1:].cuda()  # drop the first color (black) -- hard to visualize
-    pcd = create_o3d_pcd(pcd_map[:, :3], pcd_color_map)
-    map_colors = np.asarray(pcd.colors)
-    cluster_colors = torch.from_numpy(map_colors.copy()).float().cuda()
-    cluster_colors = pallete[clusters]
-    cluster_colors = cluster_colors.detach().cpu().numpy()
-    map_colors = 0.5 * map_colors + 0.5 * cluster_colors
+    
+    while True: 
+        perm = torch.randperm(pallete.size()[0])
+        # perm = [1, 0, 4, 2, 3]
+        print(perm)
+        pallete = pallete[perm]
+        pcd = create_o3d_pcd(pcd_map[:, :3], pcd_color_map)
+        map_colors = np.asarray(pcd.colors)
+        cluster_colors = torch.from_numpy(map_colors.copy()).float().cuda()
+        cluster_colors = pallete[clusters]
+        cluster_colors = cluster_colors.detach().cpu().numpy()
+        map_colors = 0.5 * map_colors + 0.5 * cluster_colors
 
-    # Assign colors and display GUI
-    pcd.colors = o3d.utility.Vector3dVector(map_colors)
-    o3d.visualization.draw_geometries([pcd])
+        # Assign colors and display GUI
+        pcd.colors = o3d.utility.Vector3dVector(map_colors)
+        o3d.io.write_point_cloud('data/kmeans.pcd', pcd)
+        o3d.visualization.draw_geometries([pcd])
 
 
 if __name__=='__main__':
