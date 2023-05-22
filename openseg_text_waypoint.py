@@ -1,4 +1,4 @@
-from util.o3d_util import visualize_multiple_pcd, pick_points
+from util.o3d_util import visualize_multiple_pcd, pick_points, create_o3d_pcd
 from util.kitti_util import KittiUtil
 from matplotlib import pyplot as plt
 import numpy as np
@@ -16,12 +16,65 @@ import time
 import tqdm
 from geometry_msgs.msg import PoseStamped
 from std_msgs.msg import Header
+import open3d as o3d
+import json
 
 
 
 torch.cuda.empty_cache()
 
+def trajectory_tracking(pcd, filename, res=100, delay=0.01):
+    '''
+    Args: 
+        pcd: o3d.geometry.pointcloud
+        filename: str
+        res: int
+        delay: float
+    filename -> name of the json file which is an array of copy pasted waypoints from o3d visualizer
+    res -> interpolation resolution
+    delay -> delay for visualization
+    '''
+    with open(filename, 'r') as f:
+        data_arr = json.load(f)
 
+    # Interpolate between two waypoints
+    full_traj = []
+    for i in range(len(data_arr)-1):
+        wp1_raw  = data_arr[i]['trajectory'][0]
+        wp2_raw  = data_arr[i+1]['trajectory'][0]
+        wp1 = np.array([
+            wp1_raw['front'],
+            wp1_raw['lookat'],
+            wp1_raw['up'],
+            [wp1_raw['zoom'],wp1_raw['zoom'],wp1_raw['zoom']]
+        ])
+        wp2 = np.array([
+            wp2_raw['front'],
+            wp2_raw['lookat'],
+            wp2_raw['up'],
+            [wp2_raw['zoom'],wp2_raw['zoom'],wp2_raw['zoom']]
+        ])
+        wps = np.linspace(wp1, wp2, num=100)
+        full_traj.append(wps)
+    full_traj = np.vstack(full_traj)
+
+    count = -1
+    # Callback Function
+    def track_callback(vis):
+        nonlocal count
+        count+=1
+        ctr = vis.get_view_control()
+        data = full_traj[count%len(full_traj)]
+        
+        
+        ctr.set_front(data[0])
+        ctr.set_lookat(np.array(data[1]))
+        ctr.set_up(np.array(data[2]))
+        ctr.set_zoom(np.array(data[3][0]))
+        time.sleep(delay)
+        return False
+
+    o3d.visualization.draw_geometries_with_animation_callback([pcd], track_callback)
 
 @dataclass
 class ProgramArgs:
@@ -111,6 +164,10 @@ def main(pub):
     pcd_feat_map = torch.tensor(np.load(map_path + 'pcd_feat_map.npy'))
     pcd_color_map = np.load(map_path + 'pcd_color_map.npy')
     pcd_map = np.load(map_path + 'pcd_map.npy')
+    # visualize_multiple_pcd([pcd_map[:, :3]], [pcd_color_map])
+    # pcdo3d = create_o3d_pcd(pcd_map[:,:3], pcd_color_map)
+    # trajectory_tracking(pcdo3d, 'waypoints.json')
+    # breakpoint()
     
     thresh = 0.1
     clip_model, preprocess = clip.load("ViT-L/14@336px")
