@@ -92,7 +92,7 @@ def get_img_feat(img, net):
     return img_feat_norm
 
 def read_lego_loam_data_file(map_path, keyframe_id):
-    filename = map_path + 'dump/' + keyframe_id + '/data'
+    filename = map_path + 'loam/' + keyframe_id + '/data'
     with open(filename, 'r') as f:
         lines = f.readlines()
 
@@ -128,6 +128,25 @@ def get_projection_matrices():
     Tr_vel_camo = np.vstack([Tr, [0,0,0,1]])
     return P, Tr_vel_camo
 
+def get_projection_matrices_carla():
+    im_size_x, im_size_y, fov = 640, 360, 110
+    f  = im_size_x /(2.0 * np.tan(fov * np.pi / 360))
+    Cx = im_size_x / 2.0
+    Cy = im_size_y / 2.0
+    K = np.array([[f, 0, Cx], [0, f, Cy], [0, 0, 1]], dtype=np.float32)
+    K = np.hstack([K, np.array([0,0,0]).reshape(3,1)])
+
+
+    # T_camo_c = build_se3_transform([0.13, -0.35, -0.7, 0, 0, 0])
+    T_camo_c = build_se3_transform([0., -0.5, -1.2, 0, 0, 0])
+    P = K @ T_camo_c
+
+    Tr = [0, -1,  0, 0, 
+        0,  0, -1, 0, 
+        1,  0,  0, 0]
+    Tr = np.array(Tr).reshape(3,4)
+    Tr_vel_camo = np.vstack([Tr, [0,0,0,1]])
+    return P, Tr_vel_camo
 
 def create_map():
     args = tyro.cli(ProgramArgs)
@@ -147,26 +166,27 @@ def create_map():
     cosine_similarity = torch.nn.CosineSimilarity(dim=1)
 
 
-    map_path = 'data/lego_loam_map1/'
-    P, Tr_vel_camo = get_projection_matrices()
+    map_path = '/home/padfoot7/car-data/Localization/maps/carla-can/'
+    P, Tr_vel_camo = get_projection_matrices_carla()
 
     T_static = build_se3_transform([0,0,0,0,0,1.57]) 
 
     pcd_map = []
     pcd_feat_map = []
     pcd_color_map = []
-    for idx in range(797):
+    for idx in range(101):
         keyframe_id = str(idx).zfill(6)
 
         odom = read_lego_loam_data_file(map_path, keyframe_id)
         odom = T_static @ odom
         
-        pcd = o3d.io.read_point_cloud(map_path+'dump/' +  keyframe_id + '/' + 'cloud.pcd')
+        pcd = o3d.io.read_point_cloud(map_path+'loam/' +  keyframe_id + '/' + 'cloud.pcd')
         pcd = np.asarray(pcd.points)
         print(pcd.shape)
 
-        
-        img = np.load(map_path+'lego_loam_images/' + keyframe_id + '.npy')
+        img = cv2.imread(map_path+'images/' + keyframe_id + '.png')
+        img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        # img = np.load(map_path+'images/' + keyframe_id + '.npy')
 
         ##################
         # Begin Projection
@@ -190,7 +210,6 @@ def create_map():
 
         # # Project lidar points on camera plane
         # img[pts_cam[mask_idx, 1], pts_cam[mask_idx, 0], :] = (255, 0, 0)
-
         # plt.imshow(img)
         # plt.show()
 

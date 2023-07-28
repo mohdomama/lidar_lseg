@@ -14,9 +14,11 @@ import rospy
 from util.rosutil import RosCom
 import time
 
+from util.transforms import build_se3_transform, transform_numpy_pcd
 
 torch.cuda.empty_cache()
 
+import rospy
 
 
 @dataclass
@@ -39,7 +41,7 @@ def get_img_feat(img, net):
     '''
     img -> RGB (0, 255)
     '''
-    # Load the input image
+    # Load the input image pcd_map[similarity>thresh][:,:3]
     with torch.no_grad():
         print(f"Original image shape: {img.shape}")
         img = cv2.resize(img, (640, 480))
@@ -88,7 +90,10 @@ def main():
     pcd_color_map = np.load(map_path + 'pcd_color_map.npy')
     pcd_map = np.load(map_path + 'pcd_map.npy')
     
-    thresh = 0.85   
+    thresh = 0.77  
+
+    roscom  = RosCom()
+
     while True:
         # Text feats 
         prompt = input('Enter Text Prompt: ')
@@ -103,7 +108,36 @@ def main():
         similarity = cosine_similarity(pcd_feat_map, text_feat_norm).cpu().numpy()
         # similarity = similarity * mask
 
-        visualize_multiple_pcd([pcd_map[:,:3], pcd_map[similarity>thresh][:,:3]], [None, None])
+        # visualize_multiple_pcd([pcd_map[:,:3], pcd_map[similarity>thresh][:,:3]], [None, None])
+
+        road = pcd_map[similarity>thresh]
+        not_road = pcd_map[similarity<thresh]
+        
+        map_vel_tf = build_se3_transform([-48, 0, -2,  0.106, -1.25, 0.037])
+        
+        # road_vel = transform_numpy_pcd(road[:,:3], map_vel_tf)
+        # not_road_vel = transform_numpy_pcd(not_road[:,:3], map_vel_tf)
+        
+        road_vel = road
+        not_road_vel = not_road
+
+        # x_mask = abs(road_vel[:, 0]) < 100
+        # y_mask = abs(road_vel[:, 1]) < 25
+        z_mask = road_vel[:, 2] < 0
+        # mask = x_mask & y_mask & z_mask
+        road_vel = road_vel[z_mask]
+
+        # x_mask = abs(not_road_vel[:, 0]) < 100
+        # y_mask = abs(not_road_vel[:, 1]) < 25
+        z_mask = not_road_vel[:, 2] < 0
+        # mask = x_mask & y_mask & z_mask
+        not_road_vel = not_road_vel[z_mask]
+        
+        roscom.publish_road(road_vel[:, :3])
+        roscom.publish_not_road(not_road_vel[:, :3])
+
+        visualize_multiple_pcd([not_road_vel[:, :3], road_vel[:, :3]])
+
         breakpoint()
 
 

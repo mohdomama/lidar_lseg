@@ -44,6 +44,7 @@ def get_img_feat(img, net):
     '''
     # Load the input image
     with torch.no_grad():
+        tic = time.time()
         print(f"Original image shape: {img.shape}")
         img = cv2.resize(img, (640, 480))
         img = torch.from_numpy(img).float() / 255.0
@@ -55,6 +56,8 @@ def get_img_feat(img, net):
 
         # Extract per-pixel CLIP features (1, 512, H // 2, W // 2)
         img_feat = net.forward(img)
+        toc = time.time()
+        print('LSEG Time: ', toc-tic)
         # Normalize features (per-pixel unit vectors)
         img_feat_norm = torch.nn.functional.normalize(img_feat, dim=1)
         print(f"Extracted CLIP image feat: {img_feat_norm.shape}")
@@ -80,7 +83,7 @@ def main():
     cosine_similarity = torch.nn.CosineSimilarity(dim=1)
 
     sequence = args.sequence
-    kitti_path = '../../KITTI/dataset/sequences/' + sequence + '/'
+    kitti_path = '../../DATASETS/SEMANTIC-KITTI-DATASET/sequences/' + sequence + '/'
     # Custom utils
     kitti_util = KittiUtil(kitti_path+'calib.txt')
 

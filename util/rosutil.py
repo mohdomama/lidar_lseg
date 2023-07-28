@@ -18,6 +18,7 @@ import json
 
 class RosCom:
     def __init__(self) -> None:
+        rospy.init_node("roscom_node")
 
         # rospy.Subscriber('/aft_mapped_to_init_high_frec',
         #                  Odometry, self.loam_odom_callback)
@@ -31,6 +32,12 @@ class RosCom:
 
         self.points_publisher = rospy.Publisher(
             '/velodyne_points', PointCloud2, queue_size=1)
+
+        self.road_publisher = rospy.Publisher(
+            '/road', PointCloud2, queue_size=1)
+
+        self.not_road_publisher = rospy.Publisher(
+            '/not_road', PointCloud2, queue_size=1)
 
         self.loam_latest = [0, 0, 0, 0]
         self.loam_map_latest = [0, 0, 0, 0]
@@ -107,6 +114,27 @@ class RosCom:
 
         ros_pcd = self.pcd_2_point_cloud(pcd, 'map', rospy.Time.now())
         self.points_publisher.publish(ros_pcd)
+
+    def publish_road(self, pcd):
+        assert pcd.shape[1] == 3, 'PCD should be in XYZ format'
+        # Add  intensity and ring channel
+        pcd = np.hstack([pcd, np.ones((pcd.shape[0], 1))])
+        # pcd, scan_id = self.feature_extract.get_scan_id(pcd)
+        # pcd = np.hstack((pcd, scan_id.astype(np.float32)))
+
+        ros_pcd = self.pcd_2_point_cloud(pcd, 'map', rospy.Time.now())
+        self.road_publisher.publish(ros_pcd)
+
+    def publish_not_road(self, pcd):
+        assert pcd.shape[1] == 3, 'PCD should be in XYZ format'
+        # Add  intensity and ring channel
+        pcd = np.hstack([pcd, np.ones((pcd.shape[0], 1))])
+        # pcd, scan_id = self.feature_extract.get_scan_id(pcd)
+        # pcd = np.hstack((pcd, scan_id.astype(np.float32)))
+
+        ros_pcd = self.pcd_2_point_cloud(pcd, 'map', rospy.Time.now())
+        self.not_road_publisher.publish(ros_pcd)
+
 
 
 
